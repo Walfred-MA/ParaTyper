@@ -1,0 +1,20 @@
+{
+  "assembly": "GCF_009914755.1_T2T-CHM13v2.0_genomic.fa",
+  "contig": "NC_060927.1",
+  "start0": 198600000,
+  "end0": 198770000,
+  "sequence_sha256": "4de9eaa821d5a79e31463e1160a97aee48bb83b49aafd1de204f9aeeb55ab4b8",
+  "scope": "targeted validation, not a whole-assembly rerun",
+  "source_alignment": "Out_transcript_v3_8_0/MUC20_target/temp/CHM13/CHM13.exon_alignments.tsv",
+  "alignment_sha256": "ce38cce190e65626943ff4daa5d5161e54749667cfa594aaceeaa8f2f4c9eee9",
+  "reference_annotation": "MUC20_shared_exons.gff3",
+  "alignment_settings": {
+    "anchor_size": 60,
+    "min_unmasked": 50,
+    "word_size": 19,
+    "evalue": "1e-30",
+    "anchored_coverage_min": 90,
+    "anchored_identity_gt": 95,
+    "raw_alignment_score_gt": 50
+  }
+}

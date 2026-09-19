@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+
+from pathlib import Path
+import os
+import re
+import shlex
+import subprocess
+import sys
+
+
+configfile: "config.json"
+
+QueryPath = Path(config["QueryPath"]).expanduser().resolve()
+Gff3 = str(Path(config["Gff3"]).expanduser().resolve())
+Reference = str(Path(config["Reference"]).expanduser().resolve())
+OutFolder = Path(config["OutputFolder"]).expanduser().resolve()
+ScriptFolder = Path(config["ScriptFolder"]).expanduser().resolve()
+TargetFolder = Path(config.get("TargetFolder", "exon_database")).expanduser().resolve()
+TempFolder = Path(config.get("TempFolder", "snaketemp")).expanduser().resolve()
+ReferencePrefix = config.get("ReferencePrefix", "reference_exons")
+ReRunlist = config.get("ReRunlist", "")
+
+BlastThreads = int(config.get("blast_threads", 8))
+CallerThreads = int(config.get("caller_threads", 8))
+
+DbPrefix = TargetFolder / ReferencePrefix
+
+
+############################
+# Read queries
+############################
+
+def read_queries(path):
+    queries = {}
+    with open(path, encoding="utf-8") as handle:
+        for line_number, raw in enumerate(handle, 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            fields = shlex.split(line)
+            if len(fields) != 2:
+                raise ValueError(f"{path}:{line_number}: expected 'haplotype_name fasta_path'")
+            name, fasta_text = fields
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                raise ValueError(f"{path}:{line_number}: unsafe haplotype name {name!r}")
+            if name in queries:
+                raise ValueError(f"{path}:{line_number}: duplicate haplotype {name!r}")
+            fasta = Path(fasta_text).expanduser()
+            if not fasta.is_absolute():
+                fasta = path.parent / fasta
+            fasta = fasta.resolve()
+            if not fasta.is_file():
+                raise ValueError(f"{path}:{line_number}: FASTA does not exist: {fasta}")
+            queries[name] = str(fasta)
+    if not queries:
+        raise ValueError(f"No query FASTAs found in {path}")
+    return queries
+
+
+queries = read_queries(QueryPath)
+haplotypes = sorted(queries)
+print(f"[LOG] Total assemblies: {len(haplotypes)}")
+
+
+def query_fasta(wildcards):
+    return queries[wildcards.haplotype]
+
+
+############################
+# Final targets
+############################
+
+rule all:
+    input:
+        expand(
+            str(OutFolder / "{haplotype}" / "{haplotype}.transcript_calls.tsv"),
+            haplotype=haplotypes,
+        ),
+        expand(
+            str(OutFolder / "{haplotype}" / "{haplotype}.pseudofragments.tsv"),
+            haplotype=haplotypes,
+        ),
+
+
+############################
+# Shared exon database
+############################
+
+rule build_exon_database:
+    input:
+        reference=Reference,
+        gff3=Gff3,
+    output:
+        fasta=str(DbPrefix) + ".exons.fa",
+        seq=str(DbPrefix) + ".seq",
+        info=str(DbPrefix) + ".exon_info.tsv",
+        aliases=str(DbPrefix) + ".exon_aliases.tsv",
+        paralogs=str(DbPrefix.parent / "indenticalparalogs.tsv"),
+        shared_genes=str(DbPrefix.parent / "shared_exon_genes.tsv"),
+        manifest=str(DbPrefix) + ".manifest.json",
+        done=touch(str(DbPrefix) + ".blastdb.done"),
+    params:
+        script=str(ScriptFolder / "build_exon_blastdb_v2.py"),
+        prefix=str(DbPrefix),
+        outdir=str(DbPrefix.parent),
+        min_unmasked=config.get("min_unmasked", 50),
+        merge_overlap=config.get("merge_exon_overlap", 99),
+    threads: 1
+    resources:
+        mem_mb=50000,
+        slurm_extra="--mem=50G -c 1",
+    run:
+        Path(params.outdir).mkdir(parents=True, exist_ok=True)
+        cmd = [
+            sys.executable,
+            str(params.script),
+            "--genome", str(input.reference),
+            "--gff3", str(input.gff3),
+            "--out", str(params.prefix),
+            "--min-unmasked", str(params.min_unmasked),
+            "--merge-exon-overlap", str(params.merge_overlap),
+            "--no-makeblastdb",
+        ]
+        print("[CMD]", shlex.join(cmd), flush=True)
+        subprocess.run(cmd, check=True)
+
+
+############################
+# One alignment job per assembly
+############################
+
+rule align_exons:
+    input:
+        query=query_fasta,
+        exon_fasta=rules.build_exon_database.output.fasta,
+        db_done=rules.build_exon_database.output.done,
+        seq=rules.build_exon_database.output.seq,
+        info=rules.build_exon_database.output.info,
+        aliases=rules.build_exon_database.output.aliases,
+    output:
+        str(TempFolder / "{haplotype}" / "{haplotype}.exon_alignments.tsv"),
+    params:
+        script=str(ScriptFolder / "align_exon_blastdb_v2.py"),
+        prefix=str(DbPrefix),
+        outdir=lambda wc: str(TempFolder / wc.haplotype),
+        min_coverage=config.get("min_exon_coverage", 90),
+        min_identity=config.get("min_identity", 95),
+        min_as=config.get("min_alignment_score", 50),
+        word_size=config.get("word_size", 50),
+        evalue=config.get("evalue", "1e-30"),
+        max_targets=config.get("max_target_seqs", 100),
+    threads: BlastThreads
+    resources:
+        mem_mb=50000,
+        slurm_extra=f"--mem=50G -c 16",
+    run:
+        Path(params.outdir).mkdir(parents=True, exist_ok=True)
+        cmd = [
+            sys.executable,
+            str(params.script),
+            "--query", str(input.query),
+            "--db", str(params.prefix),
+            "--exons-as-query",
+            "--exon-fasta", str(input.exon_fasta),
+            "--output", str(output[0]),
+            "--threads", str(threads),
+            "--evalue", str(params.evalue),
+            "--max-target-seqs", str(params.max_targets),
+            "--exon-aliases", str(input.aliases),
+            "--no-qcov-hsp-perc",
+            "--min-exon-coverage", str(params.min_coverage),
+            "--min-identity", str(params.min_identity),
+            "--min-as", str(params.min_as),
+            "--word-size", str(params.word_size),
+        ]
+        print("[CMD]", shlex.join(cmd), flush=True)
+        subprocess.run(cmd, check=True)
+
+
+############################
+# Transcript calling
+############################
+rule call_transcripts:
+    input:
+        alignments=rules.align_exons.output,
+        gff3=Gff3,
+        exon_aliases=rules.build_exon_database.output.aliases,
+        paralogs=rules.build_exon_database.output.paralogs,
+    output:
+        calls=str(OutFolder / "{haplotype}" / "{haplotype}.transcript_calls.tsv"),
+        processed=str(OutFolder / "{haplotype}" / "{haplotype}.pseudofragments.tsv"),
+    params:
+        script=str(ScriptFolder / "call_genes_from_exon_alignments_v3.py"),
+        outdir=lambda wc: str(OutFolder / wc.haplotype),
+        min_coverage=config.get("min_exon_coverage", 90),
+        min_identity=config.get("min_identity", 95),
+        protein_bonus=config.get("protein_bonus", 10),
+        complete_bonus=config.get("complete_bonus", 2),
+        max_chains=config.get("max_chains_per_transcript", 10),
+        full_gene_transcripts=config.get("full_gene_transcripts", True),
+    threads: CallerThreads
+    resources:
+        mem_mb=50000,
+        slurm_extra=f"--mem=50G -c 16",
+    run:
+        Path(params.outdir).mkdir(parents=True, exist_ok=True)
+        cmd = [
+            sys.executable,
+            str(params.script),
+            "--input", str(input.alignments),
+            "--gff", str(input.gff3),
+            "--output", str(output[0]),
+            "--pseudofragments-output", str(output.processed),
+            "--eligible-exon-info", str(input.exon_aliases),
+            "--identical-paralogs", str(input.paralogs),
+            "--prefer-mane",
+            "--query-coordinate-mode", "local",
+            "--min-exon-coverage", str(params.min_coverage),
+            "--min-identity", str(params.min_identity),
+            "--protein-bonus", str(params.protein_bonus),
+            "--complete-bonus", str(params.complete_bonus),
+            "--max-chains-per-transcript", str(params.max_chains),
+            "--threads", str(threads),
+        ]
+        cmd.append("--full-gene-transcripts" if params.full_gene_transcripts else "--no-full-gene-transcripts")
+        print("[CMD]", shlex.join(cmd), flush=True)
+        subprocess.run(cmd, check=True)
+
+
+############################
+# BED12+ conversion
+############################
+
+rule calls_to_bed:
+    input:
+        rules.call_transcripts.output.calls,
+    output:
+        str(OutFolder / "{haplotype}" / "{haplotype}.transcripts.bed"),
+    params:
+        script=str(ScriptFolder / "calls_to_bed.py"),
+        outdir=lambda wc: str(OutFolder / wc.haplotype),
+        haplotype=lambda wc: wc.haplotype,
+    threads: 1
+    resources:
+        mem_mb=4000,
+        slurm_extra="--mem=4G -c 1",
+    run:
+        Path(params.outdir).mkdir(parents=True, exist_ok=True)
+        cmd = [
+            sys.executable,
+            str(params.script),
+            "--input", str(input[0]),
+            "--output", str(output[0]),
+            "--haplotype", str(params.haplotype),
+        ]
+        print("[CMD]", shlex.join(cmd), flush=True)
+        subprocess.run(cmd, check=True)

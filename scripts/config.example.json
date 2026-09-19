@@ -1,0 +1,13 @@
+{
+  "QueryPath": "query_paths.txt",
+  "Gff3": "test/smn.gff3",
+  "Reference": "data/GRCh38.p14.genome.fa",
+  "OutputFolder": "results/smn_snakemake",
+  "ScriptFolder": "scripts",
+  "TargetFolder": "work/smn_snakemake_database",
+  "TempFolder": "work/smn_snakemake_temp",
+  "blast_threads": 8,
+  "caller_threads": 8,
+  "word_size": 19,
+  "full_gene_transcripts": true
+}

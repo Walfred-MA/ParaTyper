@@ -1,0 +1,24 @@
+# Python and editors
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+.pytest_cache/
+
+# Downloaded genomes, databases, and generated results
+/data/
+/work/
+/results/
+/reports/
+/exon_database/
+/snaketemp/
+/.snakemake/
+/query_paths*.txt
+/config.json
+*.fai
+*.gzi
+*.log
+
+# Keep complete reference annotations out of the repository
+gencode.*.annotation.gff3
+gencode.*.annotation.gff3.gz

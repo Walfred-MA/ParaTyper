@@ -1,0 +1,6 @@
+{
+  "source": "Data/MUC.gff3",
+  "source_sha256": "9949b5ec001e838c993d600b025930d36ce2f8cc9ac93fc20136dc1a35f22057",
+  "subset": "primary chr3 MUC20/MUC20-OT1 gene, transcript and exon rows; relevant attributes retained",
+  "sha256": "7cf92001d2d789caccdad7cf670b3913abe8ea18191a8b6e305a79fbe443cef0"
+}

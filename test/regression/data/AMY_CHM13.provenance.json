@@ -1,0 +1,10 @@
+{
+  "description": "Frozen AMY annotation, original Out3 exon alignments, and rebuilt eligible exon IDs; metadata reconstruction reproduced the original v3.7.1 calls byte-for-byte before the fix.",
+  "sources": {
+    "Data/AMY.gff3": "bc4c62562663d17d8ef4d856ccf75481d5bf1894c02ed60298aa265f46e0039a",
+    "Out3/temp/CHM13/CHM13.exon_alignments.tsv": "85b5e8311ce99ef57f6ae58c4732e2ea3e82bf910b3f418277bab51e500a9b72",
+    "reports/AMY_CHM13_debug/exon_database/indenticalparalogs.tsv": "b5f4a904f297fd6fd021adc2d5c9b9ed645abf68c01e3783d0a66afbce2a3ebc",
+    "reports/AMY_CHM13_debug/exon_database/reference_exons.exon_aliases.tsv": "d121348298e0e1b0f610a1be3db52b4f780f23f8321fdae34aff3ff80bf74844",
+    "Out3/CHM13/CHM13.transcript_calls.tsv": "f5e4d2777006264d107d77d7c53c05c72ee9cede8d898bef8c137bbd56a8533e"
+  }
+}

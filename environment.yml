@@ -1,0 +1,7 @@
+name: ParaTyper
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - blast
