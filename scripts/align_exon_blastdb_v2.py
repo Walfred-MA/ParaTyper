@@ -40,11 +40,13 @@ import subprocess
 import sys
 import tempfile
 from collections import defaultdict
+from contextlib import closing
 from dataclasses import dataclass, replace
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
 BL_ORD_RE = re.compile(r"BL_ORD_ID(?::|\|)(\d+)")
+DEFAULT_BLAST_QUERY_BATCH_BYTES = 100_000_000
 
 
 def open_text(path: str):
@@ -857,8 +859,10 @@ def blast_command(args: argparse.Namespace) -> List[str]:
     return cmd
 
 
-def exon_query_blast_command(args: argparse.Namespace, assembly_db: str) -> List[str]:
-    exon_fasta = args.exon_fasta or f"{args.db}.exons.fa"
+def exon_query_blast_command(
+    args: argparse.Namespace, assembly_db: str, exon_fasta: Optional[str] = None
+) -> List[str]:
+    exon_fasta = exon_fasta or args.exon_fasta or f"{args.db}.exons.fa"
     cmd = [
         args.blastn,
         "-task", "megablast",
@@ -911,6 +915,81 @@ def choose_temp_parent(args: argparse.Namespace) -> Optional[str]:
     return output_parent
 
 
+def iter_query_records(path: str) -> Iterator[Tuple[str, str]]:
+    """Read one FASTA record at a time, preserving identifiers and masking."""
+    header: Optional[str] = None
+    pieces: List[str] = []
+    with open_text(path) as handle:
+        for line in handle:
+            if line.startswith(">"):
+                if header is not None:
+                    if not pieces:
+                        raise ValueError(f"Empty exon query: {header}")
+                    yield header, "".join(pieces)
+                header = line.rstrip("\r\n")
+                if not header[1:].strip():
+                    raise ValueError(f"Empty FASTA header in {path}")
+                pieces = []
+            elif line.strip():
+                if header is None:
+                    raise ValueError(f"Sequence before FASTA header in {path}")
+                pieces.append("".join(line.split()))
+        if header is not None:
+            if not pieces:
+                raise ValueError(f"Empty exon query: {header}")
+            yield header, "".join(pieces)
+
+
+def iter_exon_query_batches(
+    exon_fasta: str, work_dir: str, batch_bytes: int
+) -> Iterator[Tuple[str, int, int]]:
+    """Yield one on-disk batch at a time; never split an exon across batches.
+
+    The scratch FASTA is reused only after the consumer finishes a BLAST run.
+    Only the exon ID is needed in the scratch header; the original descriptions
+    and metadata remain in the reference files. An oversized single record is
+    rejected rather than split or silently allowed to exceed the byte limit.
+    Zero retains the original, unbatched query path.
+    """
+    if batch_bytes < 0:
+        raise ValueError("BLAST query batch bytes must be nonnegative")
+    if batch_bytes == 0:
+        yield exon_fasta, 0, 0
+        return
+
+    batch_path = os.path.join(work_dir, "exon_query_batch.fa")
+    count = bases = size = 0
+    out = open(batch_path, "wb")
+    try:
+        with closing(iter_query_records(exon_fasta)) as records:
+            for header, sequence in records:
+                identifier = header[1:].split()[0]
+                record = f">{identifier}\n{sequence}\n".encode("utf-8")
+                if len(record) > batch_bytes:
+                    raise ValueError(
+                        f"Exon query {identifier} needs {len(record)} FASTA bytes, "
+                        f"exceeding --blast-query-batch-bytes {batch_bytes}; "
+                        "increase the limit to keep this exon intact"
+                    )
+                if count and size + len(record) > batch_bytes:
+                    out.close()
+                    yield batch_path, count, bases
+                    out = open(batch_path, "wb")
+                    count = bases = size = 0
+                out.write(record)
+                count += 1
+                bases += len(sequence)
+                size += len(record)
+        if not count:
+            raise ValueError(f"No exon queries found in {exon_fasta}")
+        out.close()
+        yield batch_path, count, bases
+    finally:
+        out.close()
+        if os.path.exists(batch_path):
+            os.unlink(batch_path)
+
+
 def iter_exon_query_lines(args: argparse.Namespace) -> Iterator[str]:
     """Yield tabular HSPs with exons as query and the assembly as target."""
     if args.blast_tabular:
@@ -940,15 +1019,36 @@ def iter_exon_query_lines(args: argparse.Namespace) -> Iterator[str]:
         # the SLURM .out/.err stream rather than being hidden by Snakemake.
         subprocess.run(make_cmd, check=True)
 
-        cmd = exon_query_blast_command(args, assembly_db)
-        print("Running:", " ".join(cmd), file=sys.stderr)
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            yield line
-        ret = proc.wait()
-        if ret != 0:
-            raise subprocess.CalledProcessError(ret, cmd)
+        # All batches search the same complete database. Stream their evidence
+        # through the same alias expansion/deduplication and call transcripts
+        # only after every batch succeeds, preserving cross-gene competition.
+        with closing(iter_exon_query_batches(
+            exon_fasta, work_dir, args.blast_query_batch_bytes
+        )) as batches:
+            for batch_number, (query_path, count, bases) in enumerate(batches, 1):
+                if args.blast_query_batch_bytes:
+                    print(
+                        f"BLAST query batch {batch_number}: {count} exons, "
+                        f"{bases} bases, {os.path.getsize(query_path)} FASTA bytes "
+                        f"(limit {args.blast_query_batch_bytes}), {args.threads} threads",
+                        file=sys.stderr,
+                    )
+                else:
+                    print("BLAST query batching disabled", file=sys.stderr)
+                cmd = exon_query_blast_command(args, assembly_db, query_path)
+                print("Running:", " ".join(cmd), file=sys.stderr)
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+                assert proc.stdout is not None
+                try:
+                    yield from proc.stdout
+                    ret = proc.wait()
+                    if ret != 0:
+                        raise subprocess.CalledProcessError(ret, cmd)
+                finally:
+                    proc.stdout.close()
+                    if proc.poll() is None:
+                        proc.terminate()
+                        proc.wait()
 
 
 def iter_sam_lines(args: argparse.Namespace) -> Iterator[str]:
@@ -978,6 +1078,10 @@ def main() -> None:
     parser.add_argument("-d", "--db", required=True, help="reference exon prefix from build_exon_blastdb_v2.py")
     parser.add_argument("-o", "--output", required=True, help="output TSV")
     parser.add_argument("-t", "--threads", type=int, default=1, help="BLAST threads [1]")
+    parser.add_argument(
+        "--blast-query-batch-bytes", type=int, default=DEFAULT_BLAST_QUERY_BATCH_BYTES,
+        help="maximum query FASTA bytes per sequential BLAST run; whole exons stay intact; 0 disables batching [100000000]",
+    )
     parser.add_argument("--min-exon-coverage", type=float, default=90.0, help="minimum anchored-query coverage percentage [90]")
     parser.add_argument("--min-identity", type=float, default=95.0, help="anchored-HSP percent identity must be greater than this value [95]")
     parser.add_argument("--min-as", type=float, default=50.0, help="minimum BLAST raw alignment score; kept if score > this value [50]")
@@ -1032,6 +1136,8 @@ def main() -> None:
     )
     parser.add_argument("--no-header", action="store_true", help="do not write header for extended output")
     args = parser.parse_args()
+    if args.blast_query_batch_bytes < 0:
+        parser.error("--blast-query-batch-bytes must be nonnegative")
     if args.no_qcov_hsp_perc:
         args.qcov_hsp_perc = None
     if args.blast_tabular and not args.exons_as_query:
