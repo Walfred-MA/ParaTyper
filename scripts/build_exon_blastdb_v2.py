@@ -22,9 +22,10 @@ Each FASTA sequence contains the transcript-oriented exon plus up to 60 bp of
 flanking reference sequence on each side.  Actual left and right anchor lengths
 are stored separately because a contig boundary can shorten one flank.
 
-By default this script writes one FASTA record per unique exon_id.  Records are
-collapsed across exon IDs only when the complete anchored sequence and the core
-exon boundaries within that sequence are identical.
+Overlapping core exons of the same gene, contig and strand are unioned before
+BLAST. Original exon boundaries and transcript associations remain in the alias
+table, including their offsets within the union query. Identical anchored union
+queries can also share one search without discarding their original aliases.
 
 Outputs:
     <out>.exons.fa       exon FASTA used to build the BLAST database
@@ -49,7 +50,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
-from identical_paralogs import (DATABASE_FORMAT, MERGE_POLICY, REPORT_NAME,
+from identical_paralogs import (DATABASE_FORMAT, EXON_QUERY_MERGE_POLICY, MERGE_POLICY, REPORT_NAME,
                                 file_identity, report_digest, write_report)
 import shared_exon_genes
 
@@ -207,6 +208,122 @@ class ExtractedExon:
     @property
     def exon_length(self) -> int:
         return self.record.end0 - self.record.start0
+
+
+@dataclass
+class QueryExonAlias:
+    exon: ExtractedExon
+    core_start0: int
+    core_end0: int
+    anchor_start0: int
+    anchor_end0: int
+    overlap_merged: bool = False
+
+
+@dataclass
+class ExonQuery:
+    target: ExtractedExon
+    aliases: List[QueryExonAlias]
+
+
+def genomic_query_span(exon: ExtractedExon) -> Tuple[int, int]:
+    rec = exon.record
+    left, right = exon.left_anchor_length, exon.right_anchor_length
+    if rec.strand == "-":
+        left, right = right, left
+    return rec.start0 - left, rec.end0 + right
+
+
+def merge_overlapping_exon_queries(
+    exons: Sequence[ExtractedExon], merge_overlapping: bool = True
+) -> List[ExonQuery]:
+    """Union intersecting core intervals within a gene/contig/strand only.
+
+    Shared reference-gene units (e.g. GA&GB) already have one gene identity.
+    Flank overlap alone never joins separate exons. Each union keeps every
+    original exon and its anchored interval in query-oriented coordinates.
+    """
+    by_gene = defaultdict(list)
+    components = []
+    for exon in exons:
+        rec = exon.record
+        genes = tuple(sorted(set(rec.gene_ids)))
+        if not genes or not merge_overlapping:
+            components.append([exon])
+            continue
+        key = (rec.chrom, rec.strand, genes)
+        by_gene[key].append(exon)
+
+    for key in sorted(by_gene):
+        component = []
+        end = -1
+        for exon in sorted(by_gene[key], key=lambda x: (
+            x.record.start0, x.record.end0, x.record.exon_id_full
+        )):
+            if component and exon.record.start0 >= end:
+                components.append(component)
+                component = []
+                end = -1
+            component.append(exon)
+            end = max(end, exon.record.end0)
+        if component:
+            components.append(component)
+
+    queries = []
+    for component in components:
+        if len(component) == 1:
+            target = component[0]
+        else:
+            first = component[0].record
+            start = min(x.record.start0 for x in component)
+            end = max(x.record.end0 for x in component)
+            ordered = sorted(component, key=lambda x: genomic_query_span(x))
+            query_start = genomic_query_span(ordered[0])[0]
+            cursor = query_start
+            pieces = []
+            for exon in ordered:
+                left, right = genomic_query_span(exon)
+                sequence = revcomp(exon.sequence) if first.strand == "-" else exon.sequence
+                if left > cursor:
+                    raise AssertionError("overlapping exon union has a reference gap")
+                if right > cursor:
+                    pieces.append(sequence[cursor - left:])
+                    cursor = right
+            sequence = "".join(pieces)
+            left_anchor, right_anchor = start - query_start, cursor - end
+            if first.strand == "-":
+                sequence = revcomp(sequence)
+                left_anchor, right_anchor = right_anchor, left_anchor
+            identity = json.dumps([first.chrom, first.strand, start, end,
+                                   sorted(set(first.gene_ids))], separators=(",", ":"))
+            query_id = "PTEXON_" + hashlib.sha256(identity.encode()).hexdigest()
+            fields = {
+                name: [value for exon in component for value in getattr(exon.record, name)]
+                for name in ("transcript_ids_full", "transcript_ids", "transcript_indices",
+                             "gene_ids_full", "gene_ids", "gene_names", "transcript_types")
+            }
+            record = replace(first, start0=start, end0=end,
+                             exon_id_full=query_id, exon_id=query_id,
+                             any_mane=any(x.record.any_mane for x in component), **fields)
+            target = ExtractedExon(record, sequence, unmasked_acgt_count(sequence),
+                                   left_anchor, right_anchor)
+
+        query_start, query_end = genomic_query_span(target)
+        aliases = []
+        for exon in component:
+            rec = exon.record
+            anchor_start, anchor_end = genomic_query_span(exon)
+            if rec.strand == "-":
+                core = (query_end - rec.end0, query_end - rec.start0)
+                anchored = (query_end - anchor_end, query_end - anchor_start)
+            else:
+                core = (rec.start0 - query_start, rec.end0 - query_start)
+                anchored = (anchor_start - query_start, anchor_end - query_start)
+            if target.sequence[anchored[0]:anchored[1]] != exon.sequence:
+                raise AssertionError("exon alias does not match its union query")
+            aliases.append(QueryExonAlias(exon, *core, *anchored, len(component) > 1))
+        queries.append(ExonQuery(target, aliases))
+    return queries
 
 
 def reciprocal_interval_overlap(a: ExonRecord, b: ExonRecord) -> float:
@@ -559,6 +676,7 @@ def write_exon_fasta(
     out_aliases: str,
     anchor_size: int,
     min_unmasked: int,
+    merge_overlapping: bool = True,
 ) -> Tuple[int, int, int, int]:
     by_chrom: Dict[str, List[ExonRecord]] = defaultdict(list)
     for rec in exon_records:
@@ -615,8 +733,12 @@ def write_exon_fasta(
     for chrom in sorted(set(by_chrom) - chroms_seen):
         print(f"WARNING: contig {chrom} appears in GFF3 but not in genome FASTA", file=sys.stderr)
 
-    groups = group_redundant_exons(extracted)
-    alias_count = sum(len(group) for group in groups)
+    queries = merge_overlapping_exon_queries(extracted, merge_overlapping)
+    query_aliases = {id(query.target): query.aliases for query in queries}
+    groups = group_redundant_exons([query.target for query in queries])
+    alias_count = sum(len(query.aliases) for query in queries)
+    print(f"Merged {len(extracted)} retained exon records into {len(queries)} "
+          "same-gene overlap queries before exact-sequence deduplication", file=sys.stderr)
 
     with open(out_fasta, "w", encoding="utf-8") as fa_out, \
         open(out_seq, "w", encoding="utf-8") as seq_out, \
@@ -633,7 +755,8 @@ def write_exon_fasta(
             "chrom\tstart0\tend0\tstrand\tlength\tgene_id_full\tgene_id\tgene_name\t"
             "transcript_id_full\ttranscript_id\ttranscript_index\tifmane_transcript\t"
             "ifproteincoding\tleft_anchor_length\tright_anchor_length\t"
-            "anchored_length\tmerge_reason\n"
+            "anchored_length\tmerge_reason\tquery_core_start0\tquery_core_end0\t"
+            "query_anchor_start0\tquery_anchor_end0\n"
         )
         for group in groups:
             representative = group[0]
@@ -666,13 +789,16 @@ def write_exon_fasta(
                 ) + "\n"
             )
             seen_aliases = set()
-            for alias in group:
+            for projection in (alias for target in group for alias in query_aliases[id(target)]):
+                alias = projection.exon
                 arec = alias.record
                 alias_key = (arec.exon_id_full, arec.coordinates)
                 if alias_key in seen_aliases:
                     continue
                 seen_aliases.add(alias_key)
-                if alias is representative:
+                if projection.overlap_merged:
+                    reason = "same_gene_overlap"
+                elif alias is representative:
                     reason = "representative"
                 elif alias.sequence == representative.sequence:
                     reason = "exact_sequence"
@@ -692,7 +818,8 @@ def write_exon_fasta(
                             arec.ifproteincoding,
                             str(alias.left_anchor_length),
                             str(alias.right_anchor_length), str(len(alias.sequence)),
-                            reason,
+                            reason, str(projection.core_start0), str(projection.core_end0),
+                            str(projection.anchor_start0), str(projection.anchor_end0),
                         ]
                     ) + "\n"
                 )
@@ -732,7 +859,7 @@ def main() -> None:
         "--merge-exon-overlap",
         type=float,
         default=99.0,
-        help="deprecated compatibility option; anchored records collapse only when their full sequences and core boundaries are identical",
+        help="legacy compatibility option (ignored); overlapping exons of the same gene are always unioned",
     )
     parser.add_argument(
         "--per-transcript-records",
@@ -812,6 +939,7 @@ def main() -> None:
         "reference_identity": file_identity(args.genome), "gff3_identity": file_identity(args.gff3),
         "anchor_size": args.anchor_size, "min_unmasked": args.min_unmasked,
         "merge_exon_overlap": args.merge_exon_overlap,
+        "exon_query_merge_policy": EXON_QUERY_MERGE_POLICY,
         "identical_mane_policy": MERGE_POLICY,
         "identical_paralogs_sha256": report_digest(paralog_file),
         "shared_exon_gene_policy": shared_exon_genes.MERGE_POLICY,

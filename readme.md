@@ -144,8 +144,8 @@ Both uncompressed `.gff3` and compressed `.gff3.gz` annotations are accepted. Wh
 The BLAST step searches exon queries in sequential batches of at most **100 MB**
 (100,000,000 FASTA bytes, including headers). Each batch uses the requested
 `--blast-threads` count and the same complete assembly database. All batches
-contribute to one alignment table before transcript calling. Exons, their case
-masking, and search thresholds are preserved. Temporary FASTA headers contain
+contribute to one alignment table before transcript calling. Original exon
+mappings and case masking are preserved. Temporary FASTA headers contain
 only exon IDs; descriptions and transcript metadata remain in the reference files.
 
 Use `--blast-query-batch-bytes 50000000` for smaller 50 MB batches, or
@@ -162,7 +162,7 @@ These options affect exon-query searches, not parsing of existing alignment file
 
 1. **Prepare reference exons.** Read GENCODE-style GFF3 gene/transcript/exon relationships, extract exon DNA with 60 bp flanking anchors, and retain anchored sequences with at least 50 uppercase A/C/G/T bases by default. The reference FASTA must contain the GFF3's contigs. Keep exon IDs, exon numbers, gene/transcript IDs, biotypes, and MANE tags when preparing custom subsets.
 2. **Define gene units.** Genes sharing more than 100 bp of exonic reference coordinates on the same contig and strand are merged transitively into shared-exon units. Separately, genes with exactly identical sets of spliced MANE DNA sequences are represented by the first gene in GFF3 order, named `<gene>merged`. This identity includes UTRs; it is not proof that all non-MANE isoforms are identical. Shared-exon groups retain their member isoforms and do not use this representative-only shortcut.
-3. **Align to the target.** BLAST aligns anchored reference exons against the target assembly. Defaults require anchored coverage ≥90%, identity >95%, and raw alignment score >50. Anchors are removed gap-aware before writing core-exon coordinates and statistics, so reported core metrics can differ from the selection metrics.
+3. **Merge queries, then align to the target.** Before BLAST, overlapping core exons within the same reference gene unit, contig, and strand are replaced by one union query with flanking anchors. Partial overlaps merge transitively; flank overlap alone does not join separate exons. Every original exon ID, boundary, and transcript association is retained in the alias metadata. Each gapped BLAST hit is projected back to each original exon and its own anchors. Defaults then require anchored coverage ≥90%, identity >95%, and alignment score >50 **per original exon**. Core-exon coordinates, CIGARs, identities, and scores are recalculated from the projected alignment.
 4. **Assign gene copies.** Merge overlapping target exon hits, score each interval for each gene using its longest eligible aligned reference exon, and chain synthetic full-gene exon-union models. Gene-level competition has no protein-coding preference, allowing pseudogenes to compete on the same score scale.
 5. **Assign transcripts within each copy.** Real isoforms compete within the selected parent's owned intervals and reference locus. MANE has priority by default; protein-coding transcripts receive a default 10-fold score multiplier. Same-gene ties prefer longer annotated spliced transcripts, then stable IDs. Cross-gene ties remain explicit.
 6. **Separate candidate fragments.** Write the main calls and the structurally defined candidate fragment table. Both files are written even when empty.
@@ -170,6 +170,18 @@ These options affect exon-query searches, not parsing of existing alignment file
 The exon similarity score is `100 × (L − 4 × (L − identical_bases)) / L`, where `L` is reference exon length. Distinct merged intervals contribute once to a chain. Gene-stage inserted runs cost 50 per unique reference exon-block number per run; a run with more than 20 unique blocks is disallowed. Skipped reference blocks have zero cost. Complete models receive a default twofold multiplier. Scores rank candidates and are not probabilities.
 
 A `full_gene` model is the **union of annotated exons**, not an alignment of the complete genomic gene with introns. Overlapping alternative exons merge into blocks. A real transcript can therefore have more exons than its parent has union blocks. A complete synthetic parent does not mean all its alternative exons occur together in one RNA.
+
+The pre-BLAST query merge reduces repeated searches; the later gene-level union
+prevents double-counting during scoring. For a merged query, the raw BLAST command
+uses `-perc_identity 0` and omits a whole-query coverage cutoff, because an intact
+short exon can occupy a small part of a longer union. The configured identity and
+coverage thresholds are applied to each projected original exon instead. Merged
+queries can change BLAST alignment context and search statistics; exact equivalence
+across all loci is not assumed.
+
+Rebuild an existing exon database to generate the merged queries. The Python
+runner accepts `--force-rebuild-database`, which also refreshes the sample results.
+For standalone or Snakemake runs, rerun the database-building step before alignment.
 
 ### Output files
 

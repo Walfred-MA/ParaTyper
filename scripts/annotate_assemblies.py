@@ -758,7 +758,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--anchor-size", type=nonnegative_int, default=60, help="reference anchor bases on each exon side [60]")
     parser.add_argument("--min-unmasked", type=nonnegative_int, default=50, help="minimum unmasked bases in an anchored query [50]")
-    parser.add_argument("--merge-exon-overlap", type=percentage, default=99.0, help="deprecated builder compatibility parameter [99]")
+    parser.add_argument("--merge-exon-overlap", type=percentage, default=99.0, help="legacy compatibility parameter (ignored); same-gene overlapping exons are always unioned")
     parser.add_argument("--word-size", type=positive_int, default=19, help="BLAST word size [19]")
     parser.add_argument("--evalue", default="1e-30", help="BLAST E-value [1e-30]")
     parser.add_argument("--min-alignment-score", type=float, default=50.0, help="anchored-HSP raw score must be greater than this [50]")

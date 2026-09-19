@@ -15,8 +15,9 @@ when available and is removed after the job.
 The original assembly-query/SAM mode remains available for backward
 compatibility.
 
-The default output is a headered, explicit table.  BLAST selection uses the
-complete anchored query:
+The default output is a headered, explicit table. Overlapping same-gene exons
+share union queries; hits are projected to each original anchored exon before
+selection:
 
     anchored_query_coverage >= 90%
     anchored_percent_identity > 95%
@@ -33,6 +34,7 @@ so the old `col9 >= 0.9 * exon_length` filter means exon coverage >= 90%.
 from __future__ import annotations
 
 import argparse
+from array import array
 import gzip
 import os
 import re
@@ -47,6 +49,7 @@ from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
 BL_ORD_RE = re.compile(r"BL_ORD_ID(?::|\|)(\d+)")
 DEFAULT_BLAST_QUERY_BATCH_BYTES = 100_000_000
+IUPAC_MASKS = dict(zip("ACMGRSVTWYHKDBN", (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)))
 
 
 def open_text(path: str):
@@ -126,6 +129,10 @@ class ExonAlias:
     left_anchor_length: int = 0
     right_anchor_length: int = 0
     anchored_length: int = 0
+    query_core_start0: Optional[int] = None
+    query_core_end0: Optional[int] = None
+    query_anchor_start0: Optional[int] = None
+    query_anchor_end0: Optional[int] = None
 
 
 def load_exon_info(info_path: str) -> Dict[str, ExonMeta]:
@@ -204,6 +211,11 @@ def load_exon_aliases(alias_path: str) -> Dict[str, List[ExonAlias]]:
             if len(parts) < len(header):
                 parts += [""] * (len(header) - len(parts))
             blast_id = parts[index["blast_exon_id_full"]]
+            offsets = {
+                name: int(parts[index[name]]) if name in index and parts[index[name]] else None
+                for name in ("query_core_start0", "query_core_end0",
+                             "query_anchor_start0", "query_anchor_end0")
+            }
             alias = ExonAlias(
                 exon_id_full=parts[index["exon_id_full"]],
                 exon_id=parts[index["exon_id"]],
@@ -228,7 +240,15 @@ def load_exon_aliases(alias_path: str) -> Dict[str, List[ExonAlias]]:
                     if "anchored_length" in index and parts[index["anchored_length"]]
                     else int(parts[index["length"]])
                 ),
+                **offsets,
             )
+            if any(value is not None for value in offsets.values()):
+                if (any(value is None for value in offsets.values())
+                        or not (0 <= alias.query_anchor_start0 <= alias.query_core_start0
+                                < alias.query_core_end0 <= alias.query_anchor_end0)
+                        or alias.query_core_end0 - alias.query_core_start0 != alias.length
+                        or alias.query_anchor_end0 - alias.query_anchor_start0 != alias.anchored_length):
+                    raise ValueError(f"Invalid union-query offsets for {alias.exon_id_full} in {alias_path}")
             key = (blast_id, alias.exon_id_full, alias.chrom, alias.start0, alias.end0, alias.strand)
             if key in seen:
                 continue
@@ -454,89 +474,83 @@ def aligned_strings_to_cigar(qseq: str, sseq: str) -> str:
     return "".join(f"{length}{op}" for length, op in runs)
 
 
+class HspProjector:
+    """Index a gapped HSP once so all original exon intervals can be clipped."""
+
+    def __init__(self, qseq: str, sseq: str, qstart1: int, qend1: int,
+                 sstart1: int, send1: int):
+        if len(qseq) != len(sseq) or not qseq:
+            raise ValueError("inconsistent gapped BLAST strings")
+        self.qseq, self.sseq = qseq, sseq
+        self.qstart = qstart1 - 1
+        self.qstep = 1 if qend1 >= qstart1 else -1
+        self.sstart1 = sstart1
+        self.sstep = 1 if send1 >= sstart1 else -1
+        self.qlo, self.qhi = min(qstart1, qend1) - 1, max(qstart1, qend1)
+        self.qcols = array("I")
+        self.subject_bases = array("I", [0])
+        self.matches = array("I", [0])
+        self.scores_twice = array("i", [0])
+        for col, (qbase, sbase) in enumerate(zip(qseq, sseq)):
+            qbase, sbase = qbase.upper(), sbase.upper()
+            if qbase != "-":
+                self.qcols.append(col)
+            gap = qbase == "-" or sbase == "-"
+            match = not gap and qbase == sbase
+            self.subject_bases.append(self.subject_bases[-1] + (sbase != "-"))
+            self.matches.append(self.matches[-1] + match)
+            if gap:
+                score_twice = -5
+            elif match and qbase in "ACGT":
+                score_twice = 2
+            elif IUPAC_MASKS.get(qbase, 15) & IUPAC_MASKS.get(sbase, 15):
+                score_twice = -2  # Intersecting ambiguous nucleotide codes.
+            else:
+                score_twice = -4
+            self.scores_twice.append(self.scores_twice[-1] + score_twice)
+        if (len(self.qcols) != self.qhi - self.qlo
+                or self.subject_bases[-1] != abs(send1 - sstart1) + 1):
+            raise ValueError("BLAST coordinates disagree with aligned strings")
+
+    def project(self, start: int, end: int, include_cigar: bool = True):
+        low, high = max(start, self.qlo), min(end, self.qhi)
+        if low >= high:
+            return None
+        left_index = (low - self.qstart) * self.qstep
+        right_index = (high - 1 - self.qstart) * self.qstep
+        first = min(self.qcols[left_index], self.qcols[right_index])
+        last = max(self.qcols[left_index], self.qcols[right_index]) + 1
+        sleft, sright = self.subject_bases[first], self.subject_bases[last]
+        if sleft == sright:
+            return None
+        if self.sstep == 1:
+            assembly_start = self.sstart1 - 1 + sleft
+            assembly_end = self.sstart1 - 1 + sright
+        else:
+            assembly_start = self.sstart1 - sright
+            assembly_end = self.sstart1 - sleft
+        identical = self.matches[last] - self.matches[first]
+        nm = last - first - identical
+        cigar = aligned_strings_to_cigar(self.qseq[first:last], self.sseq[first:last]) if include_cigar else ""
+        # Default megablast: match +1, mismatch -2, linear gap cost 2.5/base.
+        # BLAST reports the integer raw score, rounding half scores down.
+        blast_score = float((self.scores_twice[last] - self.scores_twice[first]) // 2)
+        return (low - start, high - start, assembly_start, assembly_end,
+                high - low, 100.0 * identical / (last - first), identical,
+                float(identical - 3 * nm), nm, cigar, blast_score)
+
+
 def project_anchored_hsp_to_exon(
-    qseq: str,
-    sseq: str,
-    qstart1: int,
-    qend1: int,
-    sstart1: int,
-    send1: int,
-    core_start0: int,
-    core_end0: int,
+    qseq: str, sseq: str, qstart1: int, qend1: int,
+    sstart1: int, send1: int, core_start0: int, core_end0: int,
 ) -> Optional[Tuple[int, int, int, int, int, float, int, float, int, str]]:
     """Project an anchored BLAST HSP onto its core exon, preserving gaps."""
-    if len(qseq) != len(sseq) or not qseq:
+    try:
+        projector = HspProjector(qseq, sseq, qstart1, qend1, sstart1, send1)
+    except ValueError:
         return None
-
-    qstep = 1 if qend1 >= qstart1 else -1
-    sstep = 1 if send1 >= sstart1 else -1
-    qnext = qstart1 - 1
-    snext = sstart1 - 1
-    qcoords: List[Optional[int]] = []
-    scoords: List[Optional[int]] = []
-
-    for qbase, sbase in zip(qseq, sseq):
-        if qbase == "-":
-            qcoords.append(None)
-        else:
-            qcoords.append(qnext)
-            qnext += qstep
-        if sbase == "-":
-            scoords.append(None)
-        else:
-            scoords.append(snext)
-            snext += sstep
-
-    core_columns = [
-        i for i, coord in enumerate(qcoords)
-        if coord is not None and core_start0 <= coord < core_end0
-    ]
-    if not core_columns:
-        return None
-    first_col = core_columns[0]
-    last_col = core_columns[-1] + 1
-    core_qseq = qseq[first_col:last_col]
-    core_sseq = sseq[first_col:last_col]
-    core_qcoords = [
-        coord for coord in qcoords[first_col:last_col]
-        if coord is not None and core_start0 <= coord < core_end0
-    ]
-    core_scoords = [coord for coord in scoords[first_col:last_col] if coord is not None]
-    if not core_qcoords or not core_scoords:
-        return None
-
-    identical = sum(
-        1
-        for qbase, sbase in zip(core_qseq, core_sseq)
-        if qbase != "-" and sbase != "-" and qbase.upper() == sbase.upper()
-    )
-    alignment_columns_count = len(core_qseq)
-    percent_identity = (
-        100.0 * identical / alignment_columns_count
-        if alignment_columns_count else 0.0
-    )
-    nm = alignment_columns_count - identical
-    # This is an exon-only mismatch-adjusted score.  The original full-HSP
-    # BLAST score remains available internally for candidate selection.
-    core_score = float(identical - 3 * nm)
-    exon_start = min(core_qcoords) - core_start0
-    exon_end = max(core_qcoords) + 1 - core_start0
-    assembly_start = min(core_scoords)
-    assembly_end = max(core_scoords) + 1
-    aligned_exon_bases = len(core_qcoords)
-    cigar = aligned_strings_to_cigar(core_qseq, core_sseq)
-    return (
-        exon_start,
-        exon_end,
-        assembly_start,
-        assembly_end,
-        aligned_exon_bases,
-        percent_identity,
-        identical,
-        core_score,
-        nm,
-        cigar,
-    )
+    projection = projector.project(core_start0, core_end0)
+    return projection[:10] if projection is not None else None
 
 
 def sam_line_to_alignment(
@@ -747,6 +761,57 @@ def tabular_line_to_alignment(
     )
 
 
+def tabular_line_to_alias_alignments(
+    line: str, assembly_seq_map: Dict[int, str], exon_meta: Dict[str, ExonMeta],
+    alias_map: Dict[str, List[ExonAlias]],
+) -> Iterator[AlignmentRow]:
+    """Recover each original exon from a union-query HSP before filtering."""
+    fields = line.rstrip("\n").split("\t")
+    if not fields or not fields[0].strip():
+        return
+    query_id = fields[0].split()[0]
+    aliases = alias_map.get(query_id) or alias_map.get(strip_version(query_id))
+    if not aliases or all(alias.query_core_start0 is None for alias in aliases):
+        row = tabular_line_to_alignment(line, assembly_seq_map, exon_meta)
+        if row is not None:
+            representative = exon_meta.get(row.exon_id_full) or exon_meta.get(row.exon_id)
+            yield from expand_alignment_aliases(row, representative, alias_map)
+        return
+    if len(fields) != len(BLAST_TABULAR_FIELDS):
+        raise SystemExit("ERROR: merged exon queries require qseq and sseq in BLAST tabular input")
+    try:
+        qstart, qend, sstart, send = map(int, fields[6:10])
+        projector = HspProjector(fields[15], fields[16], qstart, qend, sstart, send)
+        evalue, raw_score = float(fields[10]), float(fields[12])
+        qlen = int(fields[13])
+    except ValueError:
+        return
+    assembly_id = replace_blast_ord_id(fields[1], assembly_seq_map).split()[0]
+    for alias in aliases:
+        if alias.query_core_start0 is None or alias.query_anchor_end0 > qlen:
+            raise ValueError(f"Missing/out-of-range query offsets for {alias.exon_id_full}")
+        core = projector.project(alias.query_core_start0, alias.query_core_end0)
+        anchored = projector.project(alias.query_anchor_start0, alias.query_anchor_end0, False)
+        if core is None or anchored is None:
+            continue
+        # Retain BLAST's own score when the complete HSP is inside this alias.
+        selection_score = raw_score if (alias.query_anchor_start0 <= projector.qlo
+                                        and alias.query_anchor_end0 >= projector.qhi) else anchored[10]
+        yield AlignmentRow(
+            query_id=assembly_id, percent_identity=core[5],
+            query_start=core[2], query_end=core[3],
+            strand="+" if (qend >= qstart) == (send >= sstart) else "-",
+            exon_id=alias.exon_id, exon_id_full=alias.exon_id_full,
+            exon_length=alias.length, exon_start=core[0], exon_end=core[1],
+            aligned_exon_bases=core[4], exon_coverage=100.0 * core[4] / alias.length,
+            identical_bases=core[6], AS=core[7], NM=core[8], evalue=evalue,
+            cigar=core[9], raw_target=fields[1],
+            selection_percent_identity=anchored[5],
+            selection_coverage=100.0 * anchored[4] / alias.anchored_length,
+            selection_AS=selection_score,
+        )
+
+
 def expand_alignment_aliases(
     row: AlignmentRow,
     representative: Optional[ExonMeta],
@@ -874,9 +939,11 @@ def exon_query_blast_command(
         "-evalue", args.evalue,
         "-dust", "yes",
         "-lcase_masking",
-        "-perc_identity", str(args.blast_perc_identity),
+        # Apply identity/coverage to each original exon after projection; a
+        # divergent part of a union must not hide a good shorter-exon match.
+        "-perc_identity", str(0 if getattr(args, "merged_exon_queries", False) else args.blast_perc_identity),
     ]
-    if args.qcov_hsp_perc is not None:
+    if args.qcov_hsp_perc is not None and not getattr(args, "merged_exon_queries", False):
         cmd.extend(["-qcov_hsp_perc", str(args.qcov_hsp_perc)])
     cmd.extend(["-max_target_seqs", str(args.max_target_seqs), "-out", "-"])
     return cmd
@@ -1157,6 +1224,14 @@ def main() -> None:
     alias_map = load_exon_aliases(alias_path) if os.path.isfile(alias_path) else {}
     if alias_map:
         print(f"Loaded merged-exon aliases from {alias_path}", file=sys.stderr)
+    args.merged_exon_queries = any(
+        alias.merge_reason == "same_gene_overlap"
+        for aliases in alias_map.values() for alias in aliases
+    )
+    if args.merged_exon_queries:
+        if not args.exons_as_query:
+            raise SystemExit("ERROR: overlap-merged exon databases require --exons-as-query")
+        print("Projecting merged-query HSPs to original exons before identity/coverage/score filtering", file=sys.stderr)
     if args.exons_as_query:
         seq_map = assembly_ordinal_map(args.query)
         if not seq_map:
@@ -1188,6 +1263,9 @@ def main() -> None:
     dropped_identity = 0
     dropped_coverage = 0
     dropped_as = 0
+    min_coverage = args.min_exon_coverage
+    if args.merged_exon_queries and args.qcov_hsp_perc is not None:
+        min_coverage = max(min_coverage, args.qcov_hsp_perc)
 
     with open(args.output, "w", encoding="utf-8") as out:
         if args.output_format == "extended" and not args.no_header:
@@ -1197,22 +1275,25 @@ def main() -> None:
                 continue
             total += 1
             if args.exons_as_query:
-                row = tabular_line_to_alignment(line, seq_map, exon_meta)
+                candidates = tabular_line_to_alias_alignments(line, seq_map, exon_meta, alias_map)
             else:
                 row = sam_line_to_alignment(line, seq_map, exon_meta, query_lengths)
-            if row is None:
-                continue
-            if row.selection_AS <= args.min_as:
-                dropped_as += 1
-                continue
-            if row.selection_percent_identity <= args.min_identity:
-                dropped_identity += 1
-                continue
-            if row.selection_coverage < args.min_exon_coverage:
-                dropped_coverage += 1
-                continue
-            representative = exon_meta.get(row.exon_id_full) or exon_meta.get(row.exon_id)
-            for alias_row in expand_alignment_aliases(row, representative, alias_map):
+                if row is None:
+                    continue
+                representative = exon_meta.get(row.exon_id_full) or exon_meta.get(row.exon_id)
+                candidates = expand_alignment_aliases(row, representative, alias_map)
+            for alias_row in candidates:
+                if alias_row.selection_AS <= args.min_as:
+                    dropped_as += 1
+                    continue
+                if (alias_row.selection_percent_identity <= args.min_identity
+                        or (args.merged_exon_queries and
+                            alias_row.selection_percent_identity < args.blast_perc_identity)):
+                    dropped_identity += 1
+                    continue
+                if alias_row.selection_coverage < min_coverage:
+                    dropped_coverage += 1
+                    continue
                 # Avoid duplicate rows caused by repeated SAM records or duplicated aliases.
                 key = (
                     alias_row.query_id,
