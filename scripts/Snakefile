@@ -20,7 +20,7 @@ TempFolder = Path(config.get("TempFolder", "snaketemp")).expanduser().resolve()
 ReferencePrefix = config.get("ReferencePrefix", "reference_exons")
 ReRunlist = config.get("ReRunlist", "")
 
-BlastThreads = int(config.get("blast_threads", 8))
+BlastThreads = int(config.get("blast_threads", 4))
 CallerThreads = int(config.get("caller_threads", 8))
 
 DbPrefix = TargetFolder / ReferencePrefix

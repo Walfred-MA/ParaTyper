@@ -6,7 +6,7 @@
   "ScriptFolder": "scripts",
   "TargetFolder": "work/smn_snakemake_database",
   "TempFolder": "work/smn_snakemake_temp",
-  "blast_threads": 8,
+  "blast_threads": 4,
   "caller_threads": 8,
   "word_size": 19,
   "full_gene_transcripts": true

@@ -108,7 +108,7 @@ python scripts/annotate_assemblies.py \
   --exon-database-dir work/smn_database \
   --output results/smn_CHM13 \
   --jobs 1 \
-  --blast-threads 8 \
+  --blast-threads 4 \
   --caller-threads 8
 ```
 
@@ -136,7 +136,7 @@ python scripts/annotate_assemblies.py \
   --query-list query_paths.txt \
   --exon-database-dir work/gencode_v50_database \
   --output results/gencode_v50_CHM13 \
-  --blast-threads 8 --caller-threads 8
+  --blast-threads 4 --caller-threads 8
 ```
 
 Both uncompressed `.gff3` and compressed `.gff3.gz` annotations are accepted. Whole-genome annotation is substantially larger than the SMN example; the bundled regression suite does not benchmark its runtime or memory requirements.
@@ -193,7 +193,7 @@ Each parent appears before its children, sharing `GENE_index`. The index is uniq
 - `--no-full-gene-transcripts` runs transcript-only selection, leaving `GENE_index` blank and the fragment table empty.
 - `--max-chains-per-transcript` defaults to 10 per transcript/query/strand. Copy-rich loci may require increasing it. `--max-target-seqs` limits BLAST target records, not a direct copy-number threshold.
 - The runner defaults to `--query-coordinate-mode local`. The standalone caller defaults to `header-suffix`, interpreting a name ending `_start_end` as a sliced-region offset. Explicitly choose `local` for ordinary assembly records.
-- `--jobs` controls simultaneous assemblies; `--blast-threads` and `--caller-threads` apply per assembly. Budget CPUs and memory for concurrent jobs.
+- `--jobs` controls simultaneous assemblies; `--blast-threads` and `--caller-threads` apply per assembly. BLAST defaults to 4 threads. Budget CPUs and memory for concurrent jobs.
 - Compatible exon databases and completed sample tables can be reused. When changing query contents or alignment/calling parameters, use a new output directory or `--force-samples`; sample reuse is not a full parameter-provenance check. Use a separate database directory per annotation set.
 - `--query-fasta` treats each FASTA record as a separate sample. Use `--query-list` for ordinary multi-chromosome assemblies.
 

@@ -741,7 +741,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--python", default=sys.executable, help="Python executable used for pipeline scripts [current Python]")
 
     parser.add_argument("--jobs", type=positive_int, default=1, help="assemblies processed concurrently [1]")
-    parser.add_argument("--blast-threads", type=positive_int, default=16, help="BLAST threads per assembly [16]")
+    parser.add_argument("--blast-threads", type=positive_int, default=4, help="BLAST threads per assembly [4]")
     parser.add_argument("--caller-threads", type=positive_int, default=16, help="caller processes per assembly [16]")
     parser.add_argument(
         "--caller-shard-storage",
