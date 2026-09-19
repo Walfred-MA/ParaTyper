@@ -64,9 +64,11 @@ The complete genome-wide GFF3 and genome FASTAs are downloaded separately. See [
 
 Run the following commands from the repository root. Here **GRCh38/hg38 is the annotated source reference** and **CHM13 is the assembly being annotated**. The bundled `test/smn.gff3` uses GRCh38 coordinates; it must not be paired with CHM13 as `--reference`.
 
-### Download the genomes
+### Download the genomes and GENCODE v50 annotation
 
 Download the **full GRCh38.p14 FASTA, including alternate loci, haplotypes, patches, and scaffolds**. Some bundled gene annotations are on these sequences. A primary-assembly-only FASTA omits relevant models. The GENCODE ALL-regions FASTA uses the same sequence names as its GFF3. [GENCODE release 50 downloads](https://www.gencodegenes.org/human/release_50.html).
+
+We recommend downloading the matching **GENCODE v50 comprehensive annotation**, `gencode.v50.chr_patch_hapl_scaff.annotation.gff3`, which includes chromosomes, patches, haplotypes, and scaffolds. Use this annotation for whole-genome runs. The small SMN example below uses the bundled `test/smn.gff3`.
 
 Use the NCBI T2T-CHM13v2.0 assembly for the target. This provides the `NC_0609xx.1` contig names used in the saved regression examples. [NCBI assembly GCF_009914755.1](https://www.ncbi.nlm.nih.gov/datasets/genome/GCF_009914755.1/).
 
@@ -76,6 +78,11 @@ curl -fL --retry 3 \
   https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_50/GRCh38.p14.genome.fa.gz \
   -o data/GRCh38.p14.genome.fa.gz
 gzip -d data/GRCh38.p14.genome.fa.gz
+
+curl -fL --retry 3 \
+  https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_50/gencode.v50.chr_patch_hapl_scaff.annotation.gff3.gz \
+  -o data/gencode.v50.chr_patch_hapl_scaff.annotation.gff3.gz
+gzip -d data/gencode.v50.chr_patch_hapl_scaff.annotation.gff3.gz
 
 curl -fL --retry 3 \
   https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/009/914/755/GCF_009914755.1_T2T-CHM13v2.0/GCF_009914755.1_T2T-CHM13v2.0_genomic.fna.gz \
@@ -120,23 +127,19 @@ The saved SMN regression includes complete nine-exon MANE assignments for SMN2 n
 
 Replace `test/smn.gff3` with another bundled GFF3 and use separate database/output directories. The small files retain the original annotation subsets, which may include similarly named genes and alternative loci.
 
-To annotate all GENCODE genes on CHM13, download the matching complete annotation, then use it as `--gff3` with the same full GRCh38 FASTA and CHM13 query list:
+To annotate all GENCODE genes on CHM13, use the recommended GENCODE v50 annotation downloaded above as `--gff3`, with the same full GRCh38 FASTA and CHM13 query list:
 
 ```bash
-curl -fL --retry 3 \
-  https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_50/gencode.v50.chr_patch_hapl_scaff.annotation.gff3.gz \
-  -o data/gencode.v50.chr_patch_hapl_scaff.annotation.gff3.gz
-
 python scripts/annotate_assemblies.py \
   --reference data/GRCh38.p14.genome.fa \
-  --gff3 data/gencode.v50.chr_patch_hapl_scaff.annotation.gff3.gz \
+  --gff3 data/gencode.v50.chr_patch_hapl_scaff.annotation.gff3 \
   --query-list query_paths.txt \
   --exon-database-dir work/gencode_v50_database \
   --output results/gencode_v50_CHM13 \
   --blast-threads 8 --caller-threads 8
 ```
 
-The compressed reference annotation is accepted directly. Whole-genome annotation is substantially larger than the SMN example; the bundled regression suite does not benchmark its runtime or memory requirements.
+Both uncompressed `.gff3` and compressed `.gff3.gz` annotations are accepted. Whole-genome annotation is substantially larger than the SMN example; the bundled regression suite does not benchmark its runtime or memory requirements.
 
 ## 4. Method and output formats
 
