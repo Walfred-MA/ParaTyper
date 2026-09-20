@@ -7,10 +7,12 @@ transcript caller.
 
 The recommended ``--exons-as-query`` mode builds a temporary BLAST database
 from the assembly, uses the representative exon FASTA as the BLAST query, and
-parses explicit tabular coordinates.  This makes ``-max_target_seqs`` apply to
-assembly loci per exon instead of limiting the total exon hits returned for a
-large assembly contig.  The temporary database is placed in ``$SLURM_TMPDIR``
-when available and is removed after the job.
+parses explicit tabular coordinates. A coarse search (word 50, E-value 1e-100)
+seeds per-gene windows padded by 1.5 times the genomic gene span on each side.
+Windows with unequal or missing original-exon hit counts are realigned locally
+(word 19, E-value 1e-30). Temporary databases use ``$SLURM_TMPDIR`` when
+available and are removed after the job. ``-max_target_seqs`` caps target
+sequence records, not the number of HSPs on a chromosome.
 
 The original assembly-query/SAM mode remains available for backward
 compatibility.
@@ -134,6 +136,10 @@ class ExonAlias:
     query_core_end0: Optional[int] = None
     query_anchor_start0: Optional[int] = None
     query_anchor_end0: Optional[int] = None
+    gene_name: str = ""
+    gene_id: str = ""
+    gene_start0: Optional[int] = None
+    gene_end0: Optional[int] = None
 
 
 def load_exon_info(info_path: str) -> Dict[str, ExonMeta]:
@@ -241,6 +247,10 @@ def load_exon_aliases(alias_path: str) -> Dict[str, List[ExonAlias]]:
                     if "anchored_length" in index and parts[index["anchored_length"]]
                     else int(parts[index["length"]])
                 ),
+                gene_name=parts[index["gene_name"]] if "gene_name" in index else "",
+                gene_id=parts[index["gene_id"]] if "gene_id" in index else "",
+                gene_start0=int(parts[index["gene_start0"]]) if "gene_start0" in index else None,
+                gene_end0=int(parts[index["gene_end0"]]) if "gene_end0" in index else None,
                 **offsets,
             )
             if any(value is not None for value in offsets.values()):
@@ -267,6 +277,11 @@ def replace_blast_ord_id(text: str, seq_map: Dict[int, str]) -> str:
     match = BL_ORD_RE.search(text)
     if match:
         return seq_map.get(int(match.group(1)), text)
+    if "|" in text and text not in seq_map.values():
+        # -parse_seqids adds NCBI wrappers to bare accession FASTA headers.
+        for part in text.split("|"):
+            if part in seq_map.values():
+                return part
     return text
 
 
@@ -1057,7 +1072,7 @@ def iter_exon_query_batches(
             os.unlink(batch_path)
 
 
-def iter_exon_query_lines(args: argparse.Namespace) -> Iterator[str]:
+def iter_exon_query_lines(args: argparse.Namespace, refine=None) -> Iterator[str]:
     """Yield tabular HSPs with exons as query and the assembly as target."""
     if args.blast_tabular:
         with open_text(args.blast_tabular) as handle:
@@ -1078,6 +1093,7 @@ def iter_exon_query_lines(args: argparse.Namespace) -> Iterator[str]:
             "-in", args.query,
             "-dbtype", "nucl",
             "-blastdb_version", "5",
+            "-parse_seqids",
             "-out", assembly_db,
         ]
         print(f"Temporary assembly BLAST database: {work_dir}", file=sys.stderr)
@@ -1086,49 +1102,58 @@ def iter_exon_query_lines(args: argparse.Namespace) -> Iterator[str]:
         # the SLURM .out/.err stream rather than being hidden by Snakemake.
         subprocess.run(make_cmd, check=True)
 
-        # Smaller ThreadByQuery chunks give workers enough independent work
-        # within each FASTA batch. Respect an explicit environment override.
-        blast_env = os.environ.copy()
-        blast_env.setdefault(
-            "BLAST_MT_QUERY_BATCH_SIZE", str(DEFAULT_BLAST_MT_QUERY_BATCH_SIZE)
-        )
-        print(
-            "BLAST ThreadByQuery chunk size: "
-            f"{blast_env['BLAST_MT_QUERY_BATCH_SIZE']} bases "
-            "(BLAST_MT_QUERY_BATCH_SIZE)",
-            file=sys.stderr,
-        )
+        with closing(iter_database_query_lines(args, assembly_db, work_dir)) as lines:
+            if refine is None:
+                yield from lines
+            else:
+                yield from refine(lines, assembly_db, work_dir)
 
-        # All batches search the same complete database. Stream their evidence
-        # through the same alias expansion/deduplication and call transcripts
-        # only after every batch succeeds, preserving cross-gene competition.
-        with closing(iter_exon_query_batches(
-            exon_fasta, work_dir, args.blast_query_batch_bytes
-        )) as batches:
-            for batch_number, (query_path, count, bases) in enumerate(batches, 1):
-                if args.blast_query_batch_bytes:
-                    print(
-                        f"BLAST query batch {batch_number}: {count} exons, "
-                        f"{bases} bases, {os.path.getsize(query_path)} FASTA bytes "
-                        f"(limit {args.blast_query_batch_bytes}), {args.threads} threads",
-                        file=sys.stderr,
-                    )
-                else:
-                    print("BLAST query batching disabled", file=sys.stderr)
-                cmd = exon_query_blast_command(args, assembly_db, query_path)
-                print("Running:", " ".join(cmd), file=sys.stderr)
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, env=blast_env)
-                assert proc.stdout is not None
-                try:
-                    yield from proc.stdout
-                    ret = proc.wait()
-                    if ret != 0:
-                        raise subprocess.CalledProcessError(ret, cmd)
-                finally:
-                    proc.stdout.close()
-                    if proc.poll() is None:
-                        proc.terminate()
-                        proc.wait()
+
+def iter_database_query_lines(args, assembly_db, work_dir):
+    exon_fasta = args.exon_fasta or f"{args.db}.exons.fa"
+    # Smaller ThreadByQuery chunks give workers enough independent work
+    # within each FASTA batch. Respect an explicit environment override.
+    blast_env = os.environ.copy()
+    blast_env.setdefault(
+        "BLAST_MT_QUERY_BATCH_SIZE", str(DEFAULT_BLAST_MT_QUERY_BATCH_SIZE)
+    )
+    print(
+        "BLAST ThreadByQuery chunk size: "
+        f"{blast_env['BLAST_MT_QUERY_BATCH_SIZE']} bases "
+        "(BLAST_MT_QUERY_BATCH_SIZE)",
+        file=sys.stderr,
+    )
+
+    # All batches search the same complete database. Stream their evidence
+    # through the same alias expansion/deduplication and call transcripts
+    # only after every batch succeeds, preserving cross-gene competition.
+    with closing(iter_exon_query_batches(
+        exon_fasta, work_dir, args.blast_query_batch_bytes
+    )) as batches:
+        for batch_number, (query_path, count, bases) in enumerate(batches, 1):
+            if args.blast_query_batch_bytes:
+                print(
+                    f"BLAST query batch {batch_number}: {count} exons, "
+                    f"{bases} bases, {os.path.getsize(query_path)} FASTA bytes "
+                    f"(limit {args.blast_query_batch_bytes}), {args.threads} threads",
+                    file=sys.stderr,
+                )
+            else:
+                print("BLAST query batching disabled", file=sys.stderr)
+            cmd = exon_query_blast_command(args, assembly_db, query_path)
+            print("Running:", " ".join(cmd), file=sys.stderr)
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, env=blast_env)
+            assert proc.stdout is not None
+            try:
+                yield from proc.stdout
+                ret = proc.wait()
+                if ret != 0:
+                    raise subprocess.CalledProcessError(ret, cmd)
+            finally:
+                proc.stdout.close()
+                if proc.poll() is None:
+                    proc.terminate()
+                    proc.wait()
 
 
 def iter_sam_lines(args: argparse.Namespace) -> Iterator[str]:
@@ -1172,10 +1197,14 @@ def main() -> None:
         action="store_true",
         help="omit BLAST -qcov_hsp_perc; explicit exon-coverage filtering is still applied",
     )
-    parser.add_argument("--word-size", type=int, default=19, help="BLAST -word_size [19]")
-    parser.add_argument("--evalue", default="1e-30", help="BLAST -evalue [1e-30]")
-    parser.add_argument("--max-target-seqs", type=int, default=100, help="BLAST -max_target_seqs; assembly loci per exon in recommended mode [100]")
+    parser.add_argument("--word-size", type=int, default=50, help="first-pass BLAST -word_size [50]")
+    parser.add_argument("--evalue", default="1e-100", help="first-pass BLAST -evalue [1e-100]")
+    parser.add_argument("--max-target-seqs", type=int, default=100, help="BLAST -max_target_seqs; caps target sequence records, not HSPs [100]")
     parser.add_argument("--blastn", default="blastn", help="path to blastn [blastn]")
+    parser.add_argument("--blastdbcmd", default="blastdbcmd", help="path to blastdbcmd")
+    parser.add_argument("--local-word-size", type=int, default=19, help="local BLAST word size [19]")
+    parser.add_argument("--local-evalue", default="1e-30", help="local BLAST E-value [1e-30]")
+    parser.add_argument("--no-local-realignment", action="store_true", help="run only the first pass (diagnostic mode)")
     parser.add_argument("--makeblastdb", default="makeblastdb", help="path to makeblastdb [makeblastdb]")
     parser.add_argument(
         "--exons-as-query",
@@ -1250,8 +1279,15 @@ def main() -> None:
         if not seq_map:
             raise SystemExit(f"ERROR: no assembly FASTA records found in {args.query}")
         query_lengths: Dict[str, int] = {}
-        alignment_lines = iter_exon_query_lines(args)
-        record_label = "tabular BLAST HSP"
+        refine = None
+        if not args.no_local_realignment and not args.blast_tabular:
+            from blast_gene_windows import iter_gene_window_rows
+            def refine(lines, assembly_db, work_dir):
+                return iter_gene_window_rows(
+                    args, lines, assembly_db, work_dir, sys.modules[__name__],
+                    seq_map, exon_meta, alias_map)
+        alignment_lines = iter_exon_query_lines(args, refine)
+        record_label = "projected exon alignment" if refine is not None else "tabular BLAST HSP"
     else:
         if any(
             meta.left_anchor_length or meta.right_anchor_length
@@ -1284,10 +1320,12 @@ def main() -> None:
         if args.output_format == "extended" and not args.no_header:
             out.write("\t".join(EXTENDED_HEADER) + "\n")
         for line in alignment_lines:
-            if not line.strip() or line.startswith("@"):
+            if isinstance(line, str) and (not line.strip() or line.startswith("@")):
                 continue
             total += 1
-            if args.exons_as_query:
+            if isinstance(line, AlignmentRow):
+                candidates = [line]
+            elif args.exons_as_query:
                 candidates = tabular_line_to_alias_alignments(line, seq_map, exon_meta, alias_map)
             else:
                 row = sam_line_to_alignment(line, seq_map, exon_meta, query_lengths)

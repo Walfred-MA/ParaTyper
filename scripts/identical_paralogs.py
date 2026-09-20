@@ -9,7 +9,7 @@ from typing import Dict, List, Sequence
 
 REPORT_NAME = "indenticalparalogs.tsv"
 MERGE_POLICY = "identical_complete_mane_sequence_sets_v1"
-DATABASE_FORMAT = "anchored_exon_database_v3"
+DATABASE_FORMAT = "dynamic_anchor_exon_database_v4"
 EXON_QUERY_MERGE_POLICY = "gene_name_or_id_contig_strand_overlap_union_v2"
 REPORT_HEADER = [
     "representative_gene_id", "representative_gene_name", "merged_gene_name",

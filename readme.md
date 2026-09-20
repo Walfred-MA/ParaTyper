@@ -21,7 +21,7 @@ Missing or weak exon evidence can also reflect assembly gaps, divergent sequence
 
 ## 2. Install
 
-Use Linux or macOS with **Python 3.9 or newer** and NCBI **BLAST+** (`blastn` and `makeblastdb`). The core Python scripts use only the standard library. On Windows, use a Linux environment such as WSL.
+Use Linux or macOS with **Python 3.9 or newer** and NCBI **BLAST+** (`blastn`, `makeblastdb`, and `blastdbcmd`). The core Python scripts use only the standard library. On Windows, use a Linux environment such as WSL.
 
 Clone this repository, enter its directory, then create the environment:
 
@@ -141,7 +141,7 @@ python scripts/annotate_assemblies.py \
 
 Both uncompressed `.gff3` and compressed `.gff3.gz` annotations are accepted. Whole-genome annotation is substantially larger than the SMN example; the bundled regression suite does not benchmark its runtime or memory requirements.
 
-The BLAST step searches exon queries in sequential batches of at most **51 MB**
+The first BLAST pass searches exon queries in sequential batches of at most **51 MB**
 (51,000,000 FASTA bytes, including headers). Each batch uses the requested
 `--blast-threads` count and the same complete assembly database. All batches
 contribute to one alignment table before transcript calling. Original exon
@@ -167,14 +167,27 @@ These options affect exon-query searches, not parsing of existing alignment file
 
 ### How the pipeline works
 
-1. **Prepare reference exons.** Read GENCODE-style GFF3 gene/transcript/exon relationships, extract exon DNA with 60 bp flanking anchors, and retain anchored sequences with at least 50 uppercase A/C/G/T bases by default. The reference FASTA must contain the GFF3's contigs. Keep exon IDs, exon numbers, gene/transcript IDs, biotypes, and MANE tags when preparing custom subsets.
+1. **Prepare reference exons.** Read GENCODE-style GFF3 gene/transcript/exon relationships, extract exon DNA with dynamic flanking anchors: exons shorter than 150 bp receive `ceil((150 − length) / 2)` bases on each side, clipped at contig boundaries; exons of 150 bp or longer receive no anchors, and retain anchored sequences with at least 50 uppercase A/C/G/T bases by default. The reference FASTA must contain the GFF3's contigs. Keep exon IDs, exon numbers, gene/transcript IDs, biotypes, and MANE tags when preparing custom subsets.
 2. **Define gene units.** Genes sharing more than 100 bp of exonic reference coordinates on the same contig and strand are merged transitively into shared-exon units. Separately, genes with exactly identical sets of spliced MANE DNA sequences are represented by the first gene in GFF3 order, named `<gene>merged`. This identity includes UTRs; it is not proof that all non-MANE isoforms are identical. Shared-exon groups retain their member isoforms and do not use this representative-only shortcut.
 3. **Merge queries, then align to the target.** Before BLAST, overlapping core exons with the same gene name, contig, and strand are replaced by one union query with flanking anchors. Records without a gene name fall back to gene ID; original gene IDs are retained in the metadata. Shared reference-gene units use their combined name. Partial overlaps merge transitively; flank overlap alone does not join separate exons. Every original exon ID, boundary, and transcript association is retained in the alias metadata. Each gapped BLAST hit is projected back to each original exon and its own anchors. Defaults then require anchored coverage ≥90%, identity >95%, and alignment score >50 **per original exon**. Core-exon coordinates, CIGARs, identities, and scores are recalculated from the projected alignment.
 4. **Assign gene copies.** Merge overlapping target exon hits, score each interval for each gene using its longest eligible aligned reference exon, and chain synthetic full-gene exon-union models. Gene-level competition has no protein-coding preference, allowing pseudogenes to compete on the same score scale.
 5. **Assign transcripts within each copy.** Real isoforms compete within the selected parent's owned intervals and reference locus. MANE has priority by default; protein-coding transcripts receive a default 10-fold score multiplier. Same-gene ties prefer longer annotated spliced transcripts, then stable IDs. Cross-gene ties remain explicit.
 6. **Separate candidate fragments.** Write the main calls and the structurally defined candidate fragment table. Both files are written even when empty.
 
-The reference query FASTA includes all annotated `exon` features, including UTRs and noncoding transcripts, across the contigs supplied in the annotation and reference. It is larger than the protein-coding exome: flanking anchors and descriptive FASTA headers add further bytes. Gene names do not join different contigs, strands, or disjoint core intervals; exact-sequence deduplication can still share identical anchored queries across loci. After updating the query grouping, use `--force-rebuild-database` to regenerate an existing database.
+The default alignment strategy has two passes:
+
+- **Coarse assembly search:** `-word_size 50 -evalue 1e-100`, with the existing `-perc_identity 95` cutoff. All returned HSP positions seed windows, including hits that do not pass the later per-exon coverage filter.
+- **Candidate windows:** extend each hit by **1.5 × the gene's genomic span on each side**, clip to the target contig, sort, and merge overlapping or touching windows for that gene and contig. Gene span runs from the first original annotated exon start to the last exon end, including introns. Gene names are used when present, otherwise gene IDs; reference contigs and strands remain separate. The builder records the span before sequence filtering.
+- **Check each disconnected window independently:** project coarse alignments to the original eligible exons and apply the usual identity, coverage, and score filters. Skip local realignment only if **every original exon has the same positive hit count** in that window. Counts `[1,1,1]` and `[2,2,2]` both pass, even in different windows; `[1,0,1]` and `[1,2,1]` trigger realignment. Overlapping HSPs for the same exon and strand count as one hit.
+- **Local search:** use `blastdbcmd` to extract windows requiring realignment, then search all representative queries belonging to that gene with `-word_size 19 -evalue 1e-30`. Local target databases preserve BLAST multithreading. Query batches retain the byte limit. Results are remapped to full assembly coordinates and projected only to that gene's original exon aliases. Local results replace coarse results inside refined windows; balanced windows keep their coarse results. Local E-values use the local window database's search space.
+
+Dynamic anchors are calculated for each original exon before query merging; a union query retains any flanks needed by its short-exon aliases. The first-pass hit store is kept on disk. Logs report the number of seeded gene loci, skipped windows, refined windows, and genes with no seed.
+
+**Sensitivity limit:** a locus with no first-pass hit has no candidate window and cannot be recovered by this local search. In particular, a roughly 150 bp query can fail `1e-100` even at a perfect match. Short exons can be recovered near another exon that seeds a window; isolated short fragments and genes lacking any strong seed may be missed. Equal hit counts are a shortcut, not proof that every possible copy has been found. Whole-genome runtime and memory savings still need measurement on the intended inputs.
+
+The Python runner and aligner expose `--word-size 50 --evalue 1e-100` for the first pass and `--local-word-size 19 --local-evalue 1e-30` for local searches. The builder and runner use `--anchor-target-length 150`. The aligner's `--no-local-realignment` option runs only the coarse pass for diagnostic comparisons; `--blast-tabular` parses supplied evidence without launching either search.
+
+The reference query FASTA includes all annotated `exon` features, including UTRs and noncoding transcripts, across the contigs supplied in the annotation and reference. It is larger than the protein-coding exome: flanking anchors and descriptive FASTA headers add further bytes. Gene names do not join different contigs, strands, or disjoint core intervals; exact-sequence deduplication can still share identical anchored queries across loci. After updating the query grouping or anchor strategy, use `--force-rebuild-database` to regenerate an existing database.
 
 The exon similarity score is `100 × (L − 4 × (L − identical_bases)) / L`, where `L` is reference exon length. Distinct merged intervals contribute once to a chain. Gene-stage inserted runs cost 50 per unique reference exon-block number per run; a run with more than 20 unique blocks is disallowed. Skipped reference blocks have zero cost. Complete models receive a default twofold multiplier. Scores rank candidates and are not probabilities.
 
@@ -189,7 +202,7 @@ identity cutoff is discarded even if it contains a higher-identity shorter exon.
 Merged queries can change alignment context and search statistics; exact equivalence
 across all loci is not assumed.
 
-Rebuild an existing exon database to generate the merged queries. The Python
+Rebuild an existing exon database to generate dynamic anchors, merged queries, and gene-span metadata. The Python
 runner accepts `--force-rebuild-database`, which also refreshes the sample results.
 For standalone or Snakemake runs, rerun the database-building step before alignment.
 

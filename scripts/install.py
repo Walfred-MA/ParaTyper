@@ -14,16 +14,18 @@ import sys
 from typing import List
 
 
-CORE_EXECUTABLES = ("blastn", "makeblastdb")
+CORE_EXECUTABLES = ("blastn", "makeblastdb", "blastdbcmd")
 EXECUTABLE_PACKAGES = {
     "blastn": "blast",
     "makeblastdb": "blast",
+    "blastdbcmd": "blast",
 }
 CORE_PIPELINE_SCRIPTS = (
     "identical_paralogs.py",
     "shared_exon_genes.py",
     "build_exon_blastdb_v2.py",
     "align_exon_blastdb_v2.py",
+    "blast_gene_windows.py",
     "call_genes_from_exon_alignments_v3.py",
     "annotate_assemblies.py",
 )

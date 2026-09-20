@@ -176,7 +176,7 @@ class LiveBlastBatchTests(unittest.TestCase):
                 command = [sys.executable, str(ROOT / 'annotate_assemblies.py'),
                            '--reference', str(fixture.genome), '--gff3', str(fixture.gff),
                            '--query-list', str(queries), '--exon-database-dir', str(folder / 'db'),
-                           '--output', str(output), '--anchor-size', '3', '--min-unmasked', '0',
+                           '--output', str(output), '--anchor-target-length', '14', '--min-unmasked', '0',
                            '--blast-threads', '2', '--caller-threads', '1',
                            '--blast-query-batch-bytes', str(batch_bytes)]
                 result = subprocess.run(command, capture_output=True, text=True)

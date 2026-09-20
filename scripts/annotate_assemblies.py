@@ -297,7 +297,7 @@ def ensure_database(
     python: str,
     reference: Path,
     gff3: Path,
-    anchor_size: int,
+    anchor_target_length: int,
     min_unmasked: int,
     merge_exon_overlap: float,
     force: bool,
@@ -312,7 +312,7 @@ def ensure_database(
             manifest = json.loads(Path(str(prefix) + ".manifest.json").read_text())
             expected = {
                 "reference_identity": file_identity(reference), "gff3_identity": file_identity(gff3),
-                "anchor_size": anchor_size, "min_unmasked": min_unmasked,
+                "anchor_target_length": anchor_target_length, "min_unmasked": min_unmasked,
                 "merge_exon_overlap": merge_exon_overlap,
             }
             if any(manifest.get(key) != value for key, value in expected.items()):
@@ -339,8 +339,8 @@ def ensure_database(
                 str(gff3),
                 "--out",
                 str(temporary_prefix),
-                "--anchor-size",
-                str(anchor_size),
+                "--anchor-target-length",
+                str(anchor_target_length),
                 "--min-unmasked",
                 str(min_unmasked),
                 "--merge-exon-overlap",
@@ -435,6 +435,9 @@ def make_alignment_command(
         args.blastn,
         "--makeblastdb",
         args.makeblastdb,
+        "--blastdbcmd", args.blastdbcmd,
+        "--local-word-size", str(args.local_word_size),
+        "--local-evalue", args.local_evalue,
     ]
 
 
@@ -756,11 +759,11 @@ def parse_args() -> argparse.Namespace:
         help="caller shard storage; auto prefers RAM-backed /dev/shm [auto]",
     )
 
-    parser.add_argument("--anchor-size", type=nonnegative_int, default=60, help="reference anchor bases on each exon side [60]")
+    parser.add_argument("--anchor-target-length", type=nonnegative_int, default=150, help="minimum query length for dynamic exon anchors [150]")
     parser.add_argument("--min-unmasked", type=nonnegative_int, default=50, help="minimum unmasked bases in an anchored query [50]")
     parser.add_argument("--merge-exon-overlap", type=percentage, default=99.0, help="legacy compatibility parameter (ignored); same-gene overlapping exons are always unioned")
-    parser.add_argument("--word-size", type=positive_int, default=19, help="BLAST word size [19]")
-    parser.add_argument("--evalue", default="1e-30", help="BLAST E-value [1e-30]")
+    parser.add_argument("--word-size", type=positive_int, default=50, help="first-pass BLAST word size [50]")
+    parser.add_argument("--evalue", default="1e-100", help="first-pass BLAST E-value [1e-100]")
     parser.add_argument("--min-alignment-score", type=float, default=50.0, help="anchored-HSP raw score must be greater than this [50]")
     parser.add_argument("--min-exon-coverage", type=percentage, default=90.0, help="minimum anchored-query coverage [90]")
     parser.add_argument("--min-identity", type=percentage, default=95.0, help="anchored-HSP identity must be greater than this [95]")
@@ -779,6 +782,9 @@ def parse_args() -> argparse.Namespace:
     parser.set_defaults(full_gene_transcripts=True)
 
     parser.add_argument("--blastn", default="blastn", help="blastn executable [blastn]")
+    parser.add_argument("--blastdbcmd", default="blastdbcmd", help="blastdbcmd executable")
+    parser.add_argument("--local-word-size", type=positive_int, default=19, help="local realignment word size [19]")
+    parser.add_argument("--local-evalue", default="1e-30", help="local realignment E-value [1e-30]")
     parser.add_argument("--makeblastdb", default="makeblastdb", help="makeblastdb executable [makeblastdb]")
     parser.add_argument("--force-rebuild-database", action="store_true", help="rebuild even when a compatible database is present")
     parser.add_argument("--force-samples", action="store_true", help="rerun samples with valid final call tables")
@@ -849,7 +855,7 @@ def main() -> None:
         python=args.python,
         reference=args.reference,
         gff3=args.gff3,
-        anchor_size=args.anchor_size,
+        anchor_target_length=args.anchor_target_length,
         min_unmasked=args.min_unmasked,
         merge_exon_overlap=args.merge_exon_overlap,
         force=args.force_rebuild_database,

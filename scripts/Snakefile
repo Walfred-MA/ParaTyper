@@ -104,6 +104,7 @@ rule build_exon_database:
         prefix=str(DbPrefix),
         outdir=str(DbPrefix.parent),
         min_unmasked=config.get("min_unmasked", 50),
+        anchor_target=config.get("anchor_target_length", 150),
         merge_overlap=config.get("merge_exon_overlap", 99),
     threads: 1
     resources:
@@ -118,6 +119,7 @@ rule build_exon_database:
             "--gff3", str(input.gff3),
             "--out", str(params.prefix),
             "--min-unmasked", str(params.min_unmasked),
+            "--anchor-target-length", str(params.anchor_target),
             "--merge-exon-overlap", str(params.merge_overlap),
             "--no-makeblastdb",
         ]
@@ -147,7 +149,10 @@ rule align_exons:
         min_identity=config.get("min_identity", 95),
         min_as=config.get("min_alignment_score", 50),
         word_size=config.get("word_size", 50),
-        evalue=config.get("evalue", "1e-30"),
+        evalue=config.get("evalue", "1e-100"),
+        local_word_size=config.get("local_word_size", 19),
+        local_evalue=config.get("local_evalue", "1e-30"),
+        blastdbcmd=config.get("blastdbcmd", "blastdbcmd"),
         max_targets=config.get("max_target_seqs", 100),
         batch_bytes=config.get("blast_query_batch_bytes", 51000000),
     threads: BlastThreads
@@ -167,6 +172,9 @@ rule align_exons:
             "--threads", str(threads),
             "--blast-query-batch-bytes", str(params.batch_bytes),
             "--evalue", str(params.evalue),
+            "--local-word-size", str(params.local_word_size),
+            "--local-evalue", str(params.local_evalue),
+            "--blastdbcmd", str(params.blastdbcmd),
             "--max-target-seqs", str(params.max_targets),
             "--exon-aliases", str(input.aliases),
             "--no-qcov-hsp-perc",

@@ -62,7 +62,7 @@ class ReferenceFixture:
         self.write()
         subprocess.run([sys.executable, str(ROOT / 'build_exon_blastdb_v2.py'),
                         '--genome', str(self.genome), '--gff3', str(self.gff), '--out', str(prefix),
-                        '--anchor-size', '3', '--min-unmasked', '0', '--no-makeblastdb'],
+                        '--anchor-target-length', '14', '--min-unmasked', '0', '--no-makeblastdb'],
                        check=True, capture_output=True, text=True)
 
 

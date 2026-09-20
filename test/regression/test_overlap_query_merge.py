@@ -205,12 +205,13 @@ class LiveOverlapMergeTests(unittest.TestCase):
             for merged in (False,True):
                 prefix=folder/f'db{merged}'
                 b.write_exon_fasta(str(fasta),records,str(prefix)+'.exons.fa',str(prefix)+'.seq',
-                    str(prefix)+'.exon_info.tsv',str(prefix)+'.exon_aliases.tsv',60,0,merged)
+                    str(prefix)+'.exon_info.tsv',str(prefix)+'.exon_aliases.tsv',150,0,merged)
                 count=sum(line.startswith('>') for line in Path(str(prefix)+'.exons.fa').read_text().splitlines())
                 self.assertEqual(count,1 if merged else 4)
                 aln=folder/f'align{merged}.tsv'
                 command=[sys.executable,str(ROOT/'align_exon_blastdb_v2.py'),'-q',str(assembly),
-                         '-d',str(prefix),'-o',str(aln),'--exons-as-query','--threads','2']
+                         '-d',str(prefix),'-o',str(aln),'--exons-as-query','--threads','2',
+                         '--word-size','19','--evalue','1e-30','--no-local-realignment']
                 result=subprocess.run(command,text=True,capture_output=True)
                 self.assertEqual(result.returncode,0,result.stderr)
                 self.assertIn('-perc_identity 95.0',result.stderr)

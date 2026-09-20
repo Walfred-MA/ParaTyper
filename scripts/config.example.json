@@ -9,6 +9,10 @@
   "blast_threads": 8,
   "blast_query_batch_bytes": 51000000,
   "caller_threads": 8,
-  "word_size": 19,
+  "word_size": 50,
+  "evalue": "1e-100",
+  "local_word_size": 19,
+  "local_evalue": "1e-30",
+  "anchor_target_length": 150,
   "full_gene_transcripts": true
 }

@@ -18,9 +18,9 @@ Coordinates are zero-based, right-open genomic coordinates with strand appended:
     chrom:start-end+
     chrom:start-end-
 
-Each FASTA sequence contains the transcript-oriented exon plus up to 60 bp of
-flanking reference sequence on each side.  Actual left and right anchor lengths
-are stored separately because a contig boundary can shorten one flank.
+Each original exon shorter than 150 bp receives ceil((150 - length) / 2) bp
+of flanking reference sequence on each side; longer exons have no anchors.
+Actual oriented anchor lengths are stored because contig boundaries clip flanks.
 
 Overlapping core exons of the same gene, contig and strand are unioned before
 BLAST. Original exon boundaries and transcript associations remain in the alias
@@ -686,13 +686,18 @@ def write_exon_fasta(
     out_seq: str,
     out_info: str,
     out_aliases: str,
-    anchor_size: int,
+    anchor_target_length: int,
     min_unmasked: int,
     merge_overlapping: bool = True,
 ) -> Tuple[int, int, int, int]:
     by_chrom: Dict[str, List[ExonRecord]] = defaultdict(list)
     for rec in exon_records:
         by_chrom[rec.chrom].append(rec)
+    gene_bounds = {}
+    for rec in exon_records:
+        key = (exon_query_gene_key(rec), rec.chrom, rec.strand)
+        start, end = gene_bounds.get(key, (rec.start0, rec.end0))
+        gene_bounds[key] = (min(start, rec.start0), max(end, rec.end0))
     for chrom in by_chrom:
         by_chrom[chrom].sort(key=lambda r: (r.start0, r.end0, r.strand, r.exon_id_full))
 
@@ -715,6 +720,7 @@ def write_exon_fasta(
                     file=sys.stderr,
                 )
                 continue
+            anchor_size = max(0, (anchor_target_length - (rec.end0 - rec.start0) + 1) // 2)
             fragment_start = max(0, rec.start0 - anchor_size)
             fragment_end = min(chrom_len, rec.end0 + anchor_size)
             genomic_left_anchor = rec.start0 - fragment_start
@@ -768,7 +774,7 @@ def write_exon_fasta(
             "transcript_id_full\ttranscript_id\ttranscript_index\tifmane_transcript\t"
             "ifproteincoding\tleft_anchor_length\tright_anchor_length\t"
             "anchored_length\tmerge_reason\tquery_core_start0\tquery_core_end0\t"
-            "query_anchor_start0\tquery_anchor_end0\n"
+            "query_anchor_start0\tquery_anchor_end0\tgene_start0\tgene_end0\n"
         )
         for group in groups:
             representative = group[0]
@@ -832,6 +838,7 @@ def write_exon_fasta(
                             str(alias.right_anchor_length), str(len(alias.sequence)),
                             reason, str(projection.core_start0), str(projection.core_end0),
                             str(projection.anchor_start0), str(projection.anchor_end0),
+                            *(str(v) for v in gene_bounds[(exon_query_gene_key(arec), arec.chrom, arec.strand)]),
                         ]
                     ) + "\n"
                 )
@@ -863,7 +870,7 @@ def main() -> None:
     parser.add_argument("-g", "--gff3", required=True, help="GENCODE-style GFF3 annotation, optionally gzipped")
     parser.add_argument("-o", "--out", required=True, help="output BLAST database prefix")
     parser.add_argument("--exon-fasta", default=None, help="output exon FASTA path [default: <out>.exons.fa]")
-    parser.add_argument("--anchor-size", type=int, default=60, help="reference bases added to each side of every exon [60]")
+    parser.add_argument("--anchor-target-length", type=int, default=150, help="pad short exons to this minimum length, symmetrically; longer exons have no anchors [150]")
     parser.add_argument("--min-unmasked", type=int, default=50, help="minimum uppercase A/C/G/T bases in the full anchored sequence [50]")
     parser.add_argument("--makeblastdb", default="makeblastdb", help="path to makeblastdb [makeblastdb]")
     parser.add_argument("--no-makeblastdb", action="store_true", help="write FASTA/metadata only; do not run makeblastdb")
@@ -879,8 +886,8 @@ def main() -> None:
         help="write one FASTA record per exon-transcript GFF3 row instead of collapsing shared exon IDs",
     )
     args = parser.parse_args()
-    if args.anchor_size < 0:
-        raise SystemExit("ERROR: --anchor-size cannot be negative")
+    if args.anchor_target_length < 0:
+        raise SystemExit("ERROR: --anchor-target-length cannot be negative")
     if args.min_unmasked < 0:
         raise SystemExit("ERROR: --min-unmasked cannot be negative")
     if not 0.0 < args.merge_exon_overlap <= 100.0:
@@ -931,11 +938,11 @@ def main() -> None:
         out_seq=seq_file,
         out_info=info_file,
         out_aliases=alias_file,
-        anchor_size=args.anchor_size,
+        anchor_target_length=args.anchor_target_length,
         min_unmasked=args.min_unmasked,
     )
     print(f"Wrote {written} exon FASTA records to {exon_fasta}", file=sys.stderr)
-    print(f"Added up to {args.anchor_size} reference bases on each side of every exon", file=sys.stderr)
+    print(f"Padded short exons toward {args.anchor_target_length} bp with symmetric, contig-clipped anchors", file=sys.stderr)
     print(f"Skipped {skipped_masked} anchored exon records with uppercase A/C/G/T < {args.min_unmasked}", file=sys.stderr)
     print(f"Skipped {skipped_oor} out-of-range exon records", file=sys.stderr)
     print(f"Wrote BLAST ordinal name map to {seq_file}", file=sys.stderr)
@@ -949,7 +956,7 @@ def main() -> None:
         "format": DATABASE_FORMAT,
         "reference": os.path.realpath(args.genome), "gff3": os.path.realpath(args.gff3),
         "reference_identity": file_identity(args.genome), "gff3_identity": file_identity(args.gff3),
-        "anchor_size": args.anchor_size, "min_unmasked": args.min_unmasked,
+        "anchor_target_length": args.anchor_target_length, "min_unmasked": args.min_unmasked,
         "merge_exon_overlap": args.merge_exon_overlap,
         "exon_query_merge_policy": EXON_QUERY_MERGE_POLICY,
         "identical_mane_policy": MERGE_POLICY,
