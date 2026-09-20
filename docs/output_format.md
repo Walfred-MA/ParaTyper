@@ -1,4 +1,4 @@
-# ParaTyper output format (3.9.0)
+# ParaTyper output format (3.9.1)
 
 ## Main and fragment tables
 
@@ -37,7 +37,7 @@ The two user-facing outputs, `SAMPLE.transcript_calls.tsv` and `SAMPLE.pseudofra
 | 29 | `tie_group_id` | Identifier for a connected component of equally ranked assignments sharing merged intervals; blank for an untied call. |
 | 30 | `tie_count` | Number of alternatives represented by the ambiguity component; `1` for an untied call. Not copy number. |
 | 31 | `assignment_status` | `unique` or `tied` among retained candidates. |
-| 32 | `pipeline_version` | Caller version, currently `3.9.0`. |
+| 32 | `pipeline_version` | Caller version, currently `3.9.1`. |
 | 33 | `merged_interval_coordinates` | Distinct scored target intervals in increasing coordinate order. |
 | 34 | `merged_interval_gene_scores` | Cached gene-specific similarity scores corresponding to those intervals, before bonuses. |
 | 35 | `merged_interval_score_exon_ids` | Reference exons supplying those interval scores. |

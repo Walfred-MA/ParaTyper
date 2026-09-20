@@ -1,6 +1,26 @@
 # Repository preparation checks
 
-The packaged code is the existing ParaTyper 3.9.0 pipeline, with no changes to the calling algorithms. Regression imports and fixture locations were adapted to `scripts/` and `test/regression/`. The user-facing output contract consists of `SAMPLE.transcript_calls.tsv` and `SAMPLE.pseudofragments.tsv`; the Snakefile's default targets now match those two tables.
+Version 3.9.1 corrects full-gene chaining across disconnected target loci. All
+133 regression tests passed with Python 3.10.21 in both the public repository
+and the local transcript source tree. New cases cover both strands, touching
+versus disconnected padded windows, insertion scoring within a locus, separate
+gene parents, and reference spans containing unaligned exons.
+
+Replaying 47,552 saved NBPF/CHM13 exon alignments reproduced the old NBPF20 call
+at `NC_060925.1:16173421-144542504` (128,369,083 bp). With the correction, the
+NBPF20 call near 144.5 Mb is `144414626-144542504` (127,878 bp), with 123 of 143
+reference union blocks found. Distant evidence competes in separate loci.
+The largest selected full-gene span in the replay is 228,660 bp. The replay
+produced 123 main rows and 128 fragment rows. Serial execution using the local
+source and two-process execution using the public source produced byte-identical
+tables. No BLAST rerun or new biological validation of paralog assignments was
+performed for this correction.
+
+The initial repository packaging used the ParaTyper 3.9.0 pipeline without
+changing its calling algorithms. Regression imports and fixture locations were
+adapted to `scripts/` and `test/regression/`. The user-facing output contract
+consists of `SAMPLE.transcript_calls.tsv` and `SAMPLE.pseudofragments.tsv`; the
+Snakefile's default targets match those two tables.
 
 Checks performed during repository preparation:
 

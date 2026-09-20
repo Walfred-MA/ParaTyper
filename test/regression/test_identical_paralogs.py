@@ -144,7 +144,10 @@ class IdenticalParalogTests(unittest.TestCase):
             for query in ('copy1', 'copy2'):
                 for index, sequence in enumerate(self.sequence, 1):
                     length = len(sequence)
-                    writer.writerow(asdict(caller.ExonAlignment(query,100,100*index,100*index+length,'+',
+                    # Preserve the tiny fixture gene's seven-base intron so
+                    # both exons belong to one connected target locus.
+                    start = 100 + 15 * (index - 1)
+                    writer.writerow(asdict(caller.ExonAlignment(query,100,start,start+length,'+',
                         f'E{index}',length,0,length,length,100,length,length)))
         outputs = []
         for threads in (1, 2):

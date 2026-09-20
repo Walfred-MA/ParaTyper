@@ -6,7 +6,7 @@ ParaTyper transfers exon and transcript models from an annotated reference genom
 
 ParaTyper identifies DNA-supported gene copies and transcript models, including paralogs, partial exon duplications/deletions, and sequence differences associated with the selected models. It also reports small gene-like fragments that can interfere with copy-number variation (CNV) analysis. Comparing these results with independent gene-level assignments can help identify **candidate gene conversion**.
 
-The current release is **3.9.0**. Its two output tables describe reference-derived transcript models supported by genomic DNA. They do not establish RNA expression or discover arbitrary new splice isoforms. Sequence differences are summarized through exon identity, coverage, alignment scores, and exon structure; exact nucleotide alleles require sequence-level follow-up.
+The current release is **3.9.1**. Its two output tables describe reference-derived transcript models supported by genomic DNA. They do not establish RNA expression or discover arbitrary new splice isoforms. Sequence differences are summarized through exon identity, coverage, alignment scores, and exon structure; exact nucleotide alleles require sequence-level follow-up.
 
 ## 1. What ParaTyper does
 
@@ -198,6 +198,17 @@ The reference query FASTA includes all annotated `exon` features, including UTRs
 The exon similarity score is `100 × (L − 4 × (L − identical_bases)) / L`, where `L` is reference exon length. Distinct merged intervals contribute once to a chain. Gene-stage inserted runs cost 50 per unique reference exon-block number per run; a run with more than 20 unique blocks is disallowed. Skipped reference blocks have zero cost. Complete models receive a default twofold multiplier. Scores rank candidates and are not probabilities.
 
 A `full_gene` model is the **union of annotated exons**, not an alignment of the complete genomic gene with introns. Overlapping alternative exons merge into blocks. A real transcript can therefore have more exons than its parent has union blocks. A complete synthetic parent does not mean all its alternative exons occur together in one RNA.
+
+Gene chains stay within connected target loci. The caller reconstructs these loci
+from saved alignment blocks by extending each block by `ceil(1.5 × reference gene
+span)` on both sides and merging touching or overlapping windows. A gap larger
+than twice that padding starts a separate locus, preventing complementary exon
+fragments millions of bases apart from becoming one gene call. The reference
+span includes introns and all annotated exons, even exons without an eligible
+alignment. It scales with gene size rather than imposing a fixed intron limit.
+Real isoforms are then called within their selected gene parent. This boundary
+also applies when reusing saved exon alignments; exceptionally expanded or
+rearranged loci may be split and need manual review.
 
 The pre-BLAST query merge reduces repeated searches; the later gene-level union
 prevents double-counting during scoring. Merged queries use the configured BLAST

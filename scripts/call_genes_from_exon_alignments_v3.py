@@ -47,7 +47,7 @@ from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 from identical_paralogs import infer_report, read_report
 from shared_exon_genes import merge_shared_exon_rows, write_report as write_shared_exon_report
 
-PIPELINE_VERSION = "3.9.0"
+PIPELINE_VERSION = "3.9.1"
 GENE_INSERTION_COST = 50.0
 MAX_GENE_INSERTION_UNIQUE_EXONS = 20
 
@@ -1324,6 +1324,7 @@ class _GenePredecessorIndex:
 def best_gene_chain_for_hits(
     hits: Sequence[TranscriptHit], strand: str,
     all_hits: Optional[Sequence[TranscriptHit]] = None,
+    max_gap: Optional[int] = None,
 ) -> List[TranscriptHit]:
     """Local gene alignment with -50 per distinct exon per insertion run.
 
@@ -1331,7 +1332,9 @@ def best_gene_chain_for_hits(
     blocks costs 50 per unique reference full-gene exon number, using each
     block's deterministic longest-exon representative. More than 20 unique
     exons disallows that transition. A match ends the run; later runs count
-    independently. Previously extracted blocks remain barriers.
+    independently. Previously extracted blocks remain barriers. When max_gap
+    is supplied, disconnected target loci also reset the chain, irrespective
+    of whether their exon numbers form a compatible reference order.
     """
     if not hits:
         return []
@@ -1365,8 +1368,10 @@ def best_gene_chain_for_hits(
         block = blocks[i]
         if block != last_block:
             if last_block is not None:
-                if block != last_block + 1:
-                    # An extracted copy owns the missing block; never reinsert it.
+                gap = (max(intervals[last_block][0], intervals[block][0])
+                       - min(intervals[last_block][1], intervals[block][1]))
+                if block != last_block + 1 or (max_gap is not None and gap > max_gap):
+                    # Do not cross an extracted copy or a disconnected locus.
                     segment_start = block
                     last_occurrence.clear()
                 else:
@@ -1574,11 +1579,20 @@ def build_calls_from_grouped_hits(
         available = list(hits)
         info = annotation.transcripts[tid]
         copy_windows = exon_copy_windows(hits, strand) if info.model_type != "full_gene" else None
+        max_gap = None
+        if info.model_type == "full_gene":
+            # Reconstruct connected gene loci from the saved alignment blocks,
+            # using the search window rule: pad each side by ceil(1.5 * span).
+            # Use every annotated exon, including unaligned/ineligible exons;
+            # exon-summed length and the span of the observed hits are wrong.
+            exons = annotation.exons_by_transcript[tid]
+            span = max(e.end0 for e in exons) - min(e.start0 for e in exons)
+            max_gap = 2 * ((3 * span + 1) // 2)
         chains_made = 0
         while available and chains_made < max_chains_per_transcript:
             info = annotation.transcripts[tid]
             if info.model_type == "full_gene":
-                chain = best_gene_chain_for_hits(available, strand, all_hits=hits)
+                chain = best_gene_chain_for_hits(available, strand, all_hits=hits, max_gap=max_gap)
             else:
                 chain = best_chain_for_hits(available, strand, copy_windows)
             if not chain:
