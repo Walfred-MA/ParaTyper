@@ -149,7 +149,7 @@ rule align_exons:
         word_size=config.get("word_size", 50),
         evalue=config.get("evalue", "1e-30"),
         max_targets=config.get("max_target_seqs", 100),
-        batch_bytes=config.get("blast_query_batch_bytes", 100000000),
+        batch_bytes=config.get("blast_query_batch_bytes", 110000000),
     threads: BlastThreads
     resources:
         mem_mb=50000,
