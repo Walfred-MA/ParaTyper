@@ -184,7 +184,7 @@ class LiveBlastBatchTests(unittest.TestCase):
                 if batch_bytes:
                     self.assertIn('Local BLAST query batch 2:', result.stderr)
                     self.assertIn('-num_threads 1', result.stderr)
-                    self.assertIn('up to 2 concurrent genes', result.stderr)
+                    self.assertIn('up to 2 concurrent windows', result.stderr)
                 call_dir = output / 'sample'
                 calls = call_dir / 'sample.transcript_calls.tsv'
                 fragments = next(call_dir.glob('*pseudo*.tsv'))

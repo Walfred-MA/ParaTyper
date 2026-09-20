@@ -24,7 +24,7 @@ class LocalProcesses:
     def start(self, command, **kwargs):
         with self.lock:
             if self.stopped:
-                raise RuntimeError('Local search cancelled after another gene failed')
+                raise RuntimeError('Local search cancelled after another window failed')
             proc = subprocess.Popen(command, **kwargs)
             self.children.add(proc)
             return proc
@@ -70,6 +70,13 @@ class Gene:
     def padding(self):
         # ceil(1.5 * genomic span), on EACH side of every hit.
         return (3 * (self.end - self.start) + 1) // 2
+
+
+@dataclass(frozen=True)
+class WindowJob:
+    job_id: int
+    gid: int
+    window: tuple
 
 
 def collect_genes(alias_map):
@@ -190,8 +197,8 @@ def local_rows(args, api, gene, windows, lengths, assembly_db, work_dir, indexed
             indexed.seek(offset)
             out.write(indexed.read(size))
     subject = extract_windows(args, api, assembly_db, work_dir, windows, processes)
-    # One local database serves all query batches for this gene. Parallelism
-    # is across genes; each gene's BLAST process uses exactly one thread.
+    # The scheduler supplies exactly one window per job. All of the gene's
+    # query batches search that window using one BLAST thread.
     with tempfile.TemporaryDirectory(prefix='local_db_', dir=work_dir) as local_dir:
         local_db = os.path.join(local_dir, 'windows')
         processes.run([args.makeblastdb, '-in', subject, '-dbtype', 'nucl',
@@ -205,9 +212,6 @@ def local_rows(args, api, gene, windows, lengths, assembly_db, work_dir, indexed
                 command[command.index('-num_threads') + 1] = '1'
                 command[command.index('-word_size') + 1] = str(args.local_word_size)
                 command[command.index('-evalue') + 1] = str(args.local_evalue)
-                # Windows are separate subject records; never truncate a gene to
-                # 100 windows merely because the coarse database had 24 contigs.
-                command[command.index('-max_target_seqs') + 1] = str(max(args.max_target_seqs, len(windows)))
                 if args.blast_query_batch_bytes:
                     print(f'Local BLAST query batch {number}: {count} queries, {bases} bases, '
                           f'{os.path.getsize(batch)} FASTA bytes (limit {args.blast_query_batch_bytes}); {work_dir}', file=sys.stderr)
@@ -235,14 +239,14 @@ def local_rows(args, api, gene, windows, lengths, assembly_db, work_dir, indexed
                     processes.release(proc)
 
 
-def write_gene_result(gid, windows, args, api, genes, lengths, assembly_db,
-                      work_dir, query_path, offsets, meta, processes):
-    result = os.path.join(work_dir, f'gene_{gid}.rows')
+def write_window_result(job, args, api, genes, lengths, assembly_db,
+                        work_dir, query_path, offsets, meta, processes):
+    result = os.path.join(work_dir, f'window_{job.job_id}.rows')
     try:
-        with tempfile.TemporaryDirectory(prefix=f'gene_{gid}_', dir=work_dir) as gene_dir:
+        with tempfile.TemporaryDirectory(prefix=f'window_{job.job_id}_', dir=work_dir) as window_dir:
             with open(query_path, 'rb') as indexed, open(result, 'wb') as out:
-                for row in local_rows(args, api, genes[gid], windows, lengths, assembly_db,
-                                      gene_dir, indexed, offsets, meta, processes):
+                for row in local_rows(args, api, genes[job.gid], [job.window], lengths, assembly_db,
+                                      window_dir, indexed, offsets, meta, processes):
                     pickle.dump(row, out)
         return result
     except BaseException:
@@ -255,8 +259,8 @@ def parallel_local_rows(jobs, total, args, api, genes, lengths, assembly_db,
                         work_dir, query_path, offsets, meta):
     """Bound outstanding jobs and spool results instead of buffering HSPs in RAM."""
     workers = min(args.threads, total)
-    print(f'Local realignment queue: {total} genes; up to {workers} concurrent genes; '
-          '1 BLAST thread per gene', file=sys.stderr)
+    print(f'Local realignment queue: {total} windows; up to {workers} concurrent windows; '
+          '1 BLAST thread per window', file=sys.stderr)
     processes = LocalProcesses()
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='local-blast')
     pending = {}
@@ -267,10 +271,9 @@ def parallel_local_rows(jobs, total, args, api, genes, lengths, assembly_db,
         job = next(jobs, None)
         if job is None:
             return
-        gid, windows = job
-        future = pool.submit(write_gene_result, gid, windows, args, api, genes, lengths,
+        future = pool.submit(write_window_result, job, args, api, genes, lengths,
                              assembly_db, work_dir, query_path, offsets, meta, processes)
-        pending[future] = gid
+        pending[future] = job
 
     try:
         for _ in range(workers):
@@ -280,8 +283,8 @@ def parallel_local_rows(jobs, total, args, api, genes, lengths, assembly_db,
             # Surface errors before starting any additional jobs.
             for future in done:
                 future.result()
-            for future in sorted(done, key=lambda item: pending[item]):
-                gid = pending.pop(future)
+            for future in sorted(done, key=lambda item: pending[item].job_id):
+                job = pending.pop(future)
                 result = future.result()
                 submit_one()
                 with open(result, 'rb') as handle:
@@ -293,8 +296,9 @@ def parallel_local_rows(jobs, total, args, api, genes, lengths, assembly_db,
                         yield row
                 os.unlink(result)
                 completed += 1
-                print(f'Local realignment completed {completed}/{total} genes '
-                      f'(reference gene index {gid + 1})', file=sys.stderr)
+                contig, start, end = job.window
+                print(f'Local realignment completed {completed}/{total} windows '
+                      f'(reference gene index {job.gid + 1}; {contig}:{start}-{end})', file=sys.stderr)
     finally:
         processes.cancel()
         for future in pending:
@@ -389,10 +393,10 @@ def iter_gene_window_rows(args, lines, assembly_db, work_dir, api, seq_map, meta
             return
         query_path = os.path.join(work_dir, 'indexed_queries.fa')
         offsets = index_queries(api, args.exon_fasta or f'{args.db}.exons.fa', query_path)
-        total, = db.execute('SELECT COUNT(DISTINCT gid) FROM windows WHERE refine=1').fetchone()
+        total, = db.execute('SELECT COUNT(*) FROM windows WHERE refine=1').fetchone()
         def jobs():
-            for (gid,) in db.execute('SELECT DISTINCT gid FROM windows WHERE refine=1 ORDER BY gid'):
-                windows = list(db.execute('SELECT contig, start, end FROM windows WHERE gid=? AND refine=1 ORDER BY contig, start', (gid,)))
-                yield gid, windows
+            for job_id, gid, contig, start, end in db.execute(
+                    'SELECT rowid, gid, contig, start, end FROM windows WHERE refine=1 ORDER BY gid, contig, start'):
+                yield WindowJob(job_id, gid, (contig, start, end))
         yield from parallel_local_rows(jobs(), total, args, api, genes, lengths,
                                        assembly_db, work_dir, query_path, offsets, meta)

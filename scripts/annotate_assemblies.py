@@ -749,7 +749,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--python", default=sys.executable, help="Python executable used for pipeline scripts [current Python]")
 
     parser.add_argument("--jobs", type=positive_int, default=1, help="assemblies processed concurrently [1]")
-    parser.add_argument("--blast-threads", type=positive_int, default=16, help="first-pass threads per assembly and concurrent local genes (one BLAST thread each) [16]")
+    parser.add_argument("--blast-threads", type=positive_int, default=16, help="first-pass threads per assembly and concurrent local windows (one BLAST thread each) [16]")
     parser.add_argument(
         "--blast-query-batch-bytes", type=nonnegative_int, default=51_000_000,
         help="maximum query FASTA bytes per sequential BLAST run; whole exons stay intact; 0 disables batching [51000000]",

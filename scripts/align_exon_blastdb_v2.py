@@ -8,7 +8,7 @@ transcript caller.
 The recommended ``--exons-as-query`` mode uses minimap2 chains to discover
 candidate windows, padded by 1.5 times the genomic gene span on each side.
 Every candidate window is then searched with BLAST (word 19, E-value 1e-30).
-Local searches run concurrently across genes, with one BLAST thread per gene.
+Local searches run concurrently across windows, with one BLAST thread per window.
 Temporary databases use ``$SLURM_TMPDIR`` when available and are removed after
 the job. The earlier BLAST-first strategy remains selectable for comparisons.
 ``-max_target_seqs`` caps target sequence records, not HSPs on a chromosome.
@@ -1186,7 +1186,7 @@ def main() -> None:
     parser.add_argument("-q", "--query", required=True, help="input assembly FASTA")
     parser.add_argument("-d", "--db", required=True, help="reference exon prefix from build_exon_blastdb_v2.py")
     parser.add_argument("-o", "--output", required=True, help="output TSV")
-    parser.add_argument("-t", "--threads", type=int, default=1, help="first-pass threads and maximum concurrent local genes; local BLAST uses one thread per gene [1]")
+    parser.add_argument("-t", "--threads", type=int, default=1, help="first-pass threads and maximum concurrent local windows; local BLAST uses one thread per window [1]")
     parser.add_argument(
         "--blast-query-batch-bytes", type=int, default=DEFAULT_BLAST_QUERY_BATCH_BYTES,
         help="maximum query FASTA bytes per sequential BLAST run; whole exons stay intact; 0 disables batching [51000000]",

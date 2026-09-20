@@ -15,11 +15,11 @@ from minimap_candidates import parse_candidate
 
 
 class ParallelSearchTests(unittest.TestCase):
-    def test_parallel_jobs_have_independent_files_and_readers(self):
+    def test_windows_of_one_gene_run_concurrently_with_independent_files_and_readers(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp)/'queries.fa'
             source.write_bytes(b'012345678')
-            genes = [w.Gene(i, i+1) for i in range(9)]
+            genes = [w.Gene(0, 9)]
             barrier = threading.Barrier(3, timeout=5)
             lock = threading.Lock()
             active = peak = 0
@@ -27,6 +27,9 @@ class ParallelSearchTests(unittest.TestCase):
 
             def fake_local(args, api, gene, windows, lengths, assembly_db, work_dir, indexed, offsets, meta, processes):
                 nonlocal active, peak
+                self.assertIs(gene, genes[0])
+                self.assertEqual(len(windows), 1)
+                window_index = windows[0][1]
                 with lock:
                     active += 1
                     peak = max(peak, active)
@@ -34,19 +37,19 @@ class ParallelSearchTests(unittest.TestCase):
                     directories.add(work_dir)
                 try:
                     scratch = Path(work_dir)/'gene_queries.fa'
-                    scratch.write_text(str(gene.start))
-                    indexed.seek(gene.start)
+                    scratch.write_text(str(window_index))
+                    indexed.seek(window_index)
                     barrier.wait()
-                    self.assertEqual(indexed.read(1), str(gene.start).encode())
-                    self.assertEqual(scratch.read_text(), str(gene.start))
-                    yield gene.start
+                    self.assertEqual(indexed.read(1), str(window_index).encode())
+                    self.assertEqual(scratch.read_text(), str(window_index))
+                    yield window_index
                 finally:
                     with lock:
                         active -= 1
 
             with patch.object(w, 'local_rows', side_effect=fake_local):
                 result = list(w.parallel_local_rows(
-                    ((i, [('chr1', 0, 100)]) for i in range(9)), 9,
+                    (w.WindowJob(i, 0, ('chr1', i, i+1)) for i in range(9)), 9,
                     argparse.Namespace(threads=3), None, genes, {}, 'db', tmp, str(source), {}, {}))
             self.assertEqual(sorted(result), list(range(9)))
             self.assertEqual(peak, 3)
@@ -54,7 +57,7 @@ class ParallelSearchTests(unittest.TestCase):
             self.assertTrue(all(not Path(path).exists() for path in directories))
             self.assertEqual(list(Path(tmp).iterdir()), [source])
 
-    def test_failure_stops_other_owned_processes_and_does_not_start_more_genes(self):
+    def test_failure_stops_other_owned_processes_and_does_not_start_more_windows(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp)/'queries.fa'; source.write_text('ACGT')
             started = threading.Event()
@@ -62,25 +65,27 @@ class ParallelSearchTests(unittest.TestCase):
             visited = []
 
             def fake_local(args, api, gene, windows, lengths, assembly_db, work_dir, indexed, offsets, meta, processes):
-                visited.append(gene.start)
-                if gene.start == 0:
+                self.assertEqual(len(windows), 1)
+                window_index = windows[0][1]
+                visited.append(window_index)
+                if window_index == 0:
                     self.assertTrue(started.wait(5))
-                    raise ValueError('original gene failure')
+                    raise ValueError('original window failure')
                 proc = processes.start([sys.executable, '-c', 'import time; time.sleep(30)'])
                 launched.append(proc)
                 started.set()
                 try:
                     proc.wait()
-                    yield gene.start
+                    yield window_index
                 finally:
                     processes.release(proc)
 
             start = time.monotonic()
             with patch.object(w, 'local_rows', side_effect=fake_local):
-                with self.assertRaisesRegex(ValueError, 'original gene failure'):
+                with self.assertRaisesRegex(ValueError, 'original window failure'):
                     list(w.parallel_local_rows(
-                        ((i, []) for i in range(10)), 10, argparse.Namespace(threads=2),
-                        None, [w.Gene(i, i+1) for i in range(10)], {}, 'db', tmp, str(source), {}, {}))
+                        (w.WindowJob(i, 0, ('chr1', i, i+1)) for i in range(10)), 10, argparse.Namespace(threads=2),
+                        None, [w.Gene(0, 10)], {}, 'db', tmp, str(source), {}, {}))
             self.assertLess(time.monotonic()-start, 5)
             self.assertEqual(set(visited), {0, 1})
             self.assertTrue(launched)
