@@ -939,9 +939,8 @@ def exon_query_blast_command(
         "-evalue", args.evalue,
         "-dust", "yes",
         "-lcase_masking",
-        # Apply identity/coverage to each original exon after projection; a
-        # divergent part of a union must not hide a good shorter-exon match.
-        "-perc_identity", str(0 if getattr(args, "merged_exon_queries", False) else args.blast_perc_identity),
+        # Apply the configured BLAST identity cutoff to merged queries too.
+        "-perc_identity", str(args.blast_perc_identity),
     ]
     if args.qcov_hsp_perc is not None and not getattr(args, "merged_exon_queries", False):
         cmd.extend(["-qcov_hsp_perc", str(args.qcov_hsp_perc)])

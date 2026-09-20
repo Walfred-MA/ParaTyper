@@ -174,11 +174,12 @@ The exon similarity score is `100 × (L − 4 × (L − identical_bases)) / L`, 
 A `full_gene` model is the **union of annotated exons**, not an alignment of the complete genomic gene with introns. Overlapping alternative exons merge into blocks. A real transcript can therefore have more exons than its parent has union blocks. A complete synthetic parent does not mean all its alternative exons occur together in one RNA.
 
 The pre-BLAST query merge reduces repeated searches; the later gene-level union
-prevents double-counting during scoring. For a merged query, the raw BLAST command
-uses `-perc_identity 0` and omits a whole-query coverage cutoff, because an intact
-short exon can occupy a small part of a longer union. The configured identity and
-coverage thresholds are applied to each projected original exon instead. Merged
-queries can change BLAST alignment context and search statistics; exact equivalence
+prevents double-counting during scoring. Merged queries use the configured BLAST
+identity cutoff, default `-perc_identity 95`, just like unmerged queries. Whole-query
+coverage filtering is omitted for merged queries; coverage and the original
+anchored-exon filters apply after projection. A merged alignment below the BLAST
+identity cutoff is discarded even if it contains a higher-identity shorter exon.
+Merged queries can change alignment context and search statistics; exact equivalence
 across all loci is not assumed.
 
 Rebuild an existing exon database to generate the merged queries. The Python

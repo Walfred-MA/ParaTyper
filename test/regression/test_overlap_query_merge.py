@@ -213,8 +213,7 @@ class LiveOverlapMergeTests(unittest.TestCase):
                          '-d',str(prefix),'-o',str(aln),'--exons-as-query','--threads','2']
                 result=subprocess.run(command,text=True,capture_output=True)
                 self.assertEqual(result.returncode,0,result.stderr)
-                if merged:
-                    self.assertIn('-perc_identity 0',result.stderr)
+                self.assertIn('-perc_identity 95.0',result.stderr)
                 alignments=rows(aln)
                 self.assertTrue(any(r['query_id']=='fragment' and r['exon_id']=='ESHORT' for r in alignments))
                 self.assertTrue(any('I' in r['cigar'] for r in alignments))
