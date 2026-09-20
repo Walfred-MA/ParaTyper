@@ -147,6 +147,8 @@ one BLAST thread per window**. For example, `--blast-threads 32` runs up to 32 w
 at once per assembly. Each window has separate scratch files and database files;
 results are streamed through temporary files instead of buffered in memory.
 Progress reports completed window jobs against the actual local-search total.
+Local realignment omits per-batch messages and BLAST commands; completion
+progress and subprocess errors remain visible.
 With `--jobs` greater than one, each assembly receives its own worker budget.
 
 Minimap2 uses internal batches of **50 million query bases** (`-K50000000`),
@@ -185,7 +187,7 @@ The default alignment strategy has two passes:
 
 **Balanced-window skipping is disabled in the default minimap2 mode.** Approximate chains are used only to choose search regions; they do not supply final exon hit counts or mutations. Every candidate window receives detailed local BLAST.
 
-Dynamic anchors are calculated for each original exon before query merging; a union query retains any flanks needed by its short-exon aliases. Candidate positions are stored on disk. Logs report seeded gene loci, candidate windows, the actual number of local window jobs, worker count, and completed jobs.
+Dynamic anchors are calculated for each original exon before query merging; a union query retains any flanks needed by its short-exon aliases. Candidate positions are stored on disk. Logs report seeded gene loci, candidate windows, the actual number of local window jobs, and completed jobs.
 
 **Sensitivity limit:** a locus with no candidate seed has no window and cannot be recovered locally. Short or repetitive fragments can still be missed. Whole-genome runtime and memory savings need measurement on the intended inputs.
 

@@ -207,15 +207,11 @@ def local_rows(args, api, gene, windows, lengths, assembly_db, work_dir, indexed
         env = os.environ.copy()
         env.setdefault('BLAST_MT_QUERY_BATCH_SIZE', str(api.DEFAULT_BLAST_MT_QUERY_BATCH_SIZE))
         with closing(api.iter_exon_query_batches(query, work_dir, args.blast_query_batch_bytes)) as batches:
-            for number, (batch, count, bases) in enumerate(batches, 1):
+            for batch, _count, _bases in batches:
                 command = api.exon_query_blast_command(args, local_db, batch)
                 command[command.index('-num_threads') + 1] = '1'
                 command[command.index('-word_size') + 1] = str(args.local_word_size)
                 command[command.index('-evalue') + 1] = str(args.local_evalue)
-                if args.blast_query_batch_bytes:
-                    print(f'Local BLAST query batch {number}: {count} queries, {bases} bases, '
-                          f'{os.path.getsize(batch)} FASTA bytes (limit {args.blast_query_batch_bytes}); {work_dir}', file=sys.stderr)
-                print('Local BLAST:', ' '.join(command), file=sys.stderr)
                 proc = processes.start(command, stdout=subprocess.PIPE, text=True, env=env)
                 try:
                     for line in proc.stdout:
@@ -259,8 +255,6 @@ def parallel_local_rows(jobs, total, args, api, genes, lengths, assembly_db,
                         work_dir, query_path, offsets, meta):
     """Bound outstanding jobs and spool results instead of buffering HSPs in RAM."""
     workers = min(args.threads, total)
-    print(f'Local realignment queue: {total} windows; up to {workers} concurrent windows; '
-          '1 BLAST thread per window', file=sys.stderr)
     processes = LocalProcesses()
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='local-blast')
     pending = {}

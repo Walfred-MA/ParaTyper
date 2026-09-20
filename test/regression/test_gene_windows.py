@@ -131,10 +131,8 @@ class LiveWindowTests(unittest.TestCase):
                 if mode == 'two_stage':
                     self.assertIn('-word_size 50', result.stderr)
                     self.assertIn('-evalue 1e-100', result.stderr)
-                    self.assertIn('-word_size 19', result.stderr)
                     self.assertNotIn("'num_threads' is currently ignored", result.stderr)
                     self.assertNotIn('-subject ', result.stderr)
-                    self.assertIn('-evalue 1e-30', result.stderr)
                     self.assertIn('1 balanced (skip), 3 require local realignment', result.stderr)
                     self.assertIn('1 gene loci have no seed', result.stderr)
                     self.assertIn('Local realignment completed 3/3 windows', result.stderr)
@@ -142,11 +140,7 @@ class LiveWindowTests(unittest.TestCase):
                     self.assertIn('First pass (minimap2)', result.stderr)
                     self.assertIn('balanced-window skipping disabled', result.stderr)
                     self.assertIn('Local realignment completed 5/5 windows', result.stderr)
-                    self.assertIn('1 BLAST thread per window', result.stderr)
                     self.assertNotIn('-evalue 1e-100', result.stderr)
-                    self.assertIn('-num_threads 1', result.stderr)
-                    self.assertNotIn('-num_threads 2', result.stderr)
-                    self.assertIn('up to 1 concurrent windows' if mode == 'minimap_serial' else 'up to 2 concurrent windows', result.stderr)
             normalize = lambda data: sorted(tuple(sorted(row.items())) for row in data)
             self.assertEqual(normalize(results['minimap_serial']), normalize(results['minimap_parallel']))
             coarse = results['coarse']; final = results['two_stage']
