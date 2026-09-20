@@ -7,7 +7,7 @@ from test_copy_chaining import hit
 
 
 class GeneLocusTests(unittest.TestCase):
-    def test_disconnected_windows_cannot_form_one_chain_on_either_strand(self):
+    def test_distant_fragments_cannot_form_one_chain_on_either_strand(self):
         for strand in ('+', '-'):
             hits = [hit(1, 16_173_421, 16_173_521, strand=strand),
                     hit(2, 119_875_251, 119_875_393, strand=strand),
@@ -16,13 +16,13 @@ class GeneLocusTests(unittest.TestCase):
             calls = []
             while remaining:
                 chain = c.best_gene_chain_for_hits(
-                    remaining, strand, all_hits=hits, max_gap=407_176)
+                    remaining, strand, all_hits=hits, max_gap=203_587)
                 calls.append(chain)
                 used = {h.competition_interval for h in chain}
                 remaining = [h for h in remaining if h.competition_interval not in used]
             self.assertEqual([len(chain) for chain in calls], [1, 1, 1])
 
-    def test_touching_padded_windows_join_but_disconnected_windows_do_not(self):
+    def test_gap_limit_is_inclusive(self):
         for strand in ('+', '-'):
             for gap, expected in ((300, 2), (301, 1)):
                 hits = [hit(1, 100, 120, strand=strand),
@@ -72,12 +72,24 @@ class GeneLocusTests(unittest.TestCase):
             self.assertTrue(all(c.call_query_bounds(call)[1] - c.call_query_bounds(call)[0] == 100
                                 for call in calls))
 
+    def test_hierarchy_uses_one_and_a_half_gene_spans_as_the_gap_limit(self):
+        for strand in ('+', '-'):
+            for span in (135_724, 135_725):
+                limit = 3 * span // 2
+                for gap, parent_count in ((limit, 1), (limit + 1, 2)):
+                    ann, alignments = self.fixture(
+                        [0, span - 100], [(100, 200), (200 + gap, 300 + gap)], strand)
+                    calls, _ = c.build_hierarchical_calls(
+                        alignments, ann, c.truncate_expected_exons(ann, None), 10, 2, 1, 10, True)
+                    parents = [call for call in calls if call.transcript_info.model_type == 'full_gene']
+                    self.assertEqual(len(parents), parent_count)
+
     def test_gene_span_includes_unaligned_exons_and_introns(self):
         # The third exon is absent from the eligible database, but the full
         # 2 Mb reference span must still allow the first two hits to connect.
         for strand in ('+', '-'):
             ann, alignments = self.fixture(
-                [0, 1000, 2_000_000], [(100, 200), (3_000_000, 3_000_100)], strand)
+                [0, 1000, 2_000_000], [(100, 200), (2_500_000, 2_500_100)], strand)
             expected = c.truncate_expected_exons(ann, None, eligible_exon_ids={'G1E1', 'G1E2'})
             calls, _ = c.build_hierarchical_calls(alignments, ann, expected, 10, 2, 1, 10, True)
             parents = [call for call in calls if call.transcript_info.model_type == 'full_gene']

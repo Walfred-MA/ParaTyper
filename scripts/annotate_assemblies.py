@@ -43,7 +43,7 @@ DATABASE_SUFFIXES = (
 )
 SAMPLE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
 PRINT_LOCK = threading.Lock()
-PIPELINE_VERSION = "3.9.1"
+PIPELINE_VERSION = "3.9.2"
 
 
 @dataclass(frozen=True)

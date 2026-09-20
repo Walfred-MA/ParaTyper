@@ -47,7 +47,7 @@ from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 from identical_paralogs import infer_report, read_report
 from shared_exon_genes import merge_shared_exon_rows, write_report as write_shared_exon_report
 
-PIPELINE_VERSION = "3.9.1"
+PIPELINE_VERSION = "3.9.2"
 GENE_INSERTION_COST = 50.0
 MAX_GENE_INSERTION_UNIQUE_EXONS = 20
 
@@ -1581,13 +1581,14 @@ def build_calls_from_grouped_hits(
         copy_windows = exon_copy_windows(hits, strand) if info.model_type != "full_gene" else None
         max_gap = None
         if info.model_type == "full_gene":
-            # Reconstruct connected gene loci from the saved alignment blocks,
-            # using the search window rule: pad each side by ceil(1.5 * span).
+            # Consecutive target blocks cannot be farther apart than 1.5 times
+            # the reference gene span. Padding both sides of a search window
+            # must not double this chaining limit.
             # Use every annotated exon, including unaligned/ineligible exons;
             # exon-summed length and the span of the observed hits are wrong.
             exons = annotation.exons_by_transcript[tid]
             span = max(e.end0 for e in exons) - min(e.start0 for e in exons)
-            max_gap = 2 * ((3 * span + 1) // 2)
+            max_gap = 3 * span // 2
         chains_made = 0
         while available and chains_made < max_chains_per_transcript:
             info = annotation.transcripts[tid]

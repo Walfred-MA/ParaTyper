@@ -196,7 +196,7 @@ class RankingTests(unittest.TestCase):
         self.assertEqual(extras['tie_group_id'], call.tie_group_id)
         self.assertEqual(extras['tie_count'], '2')
         self.assertEqual(extras['assignment_status'], 'tied')
-        self.assertEqual(extras['pipeline_version'], '3.9.1')
+        self.assertEqual(extras['pipeline_version'], '3.9.2')
 
 
 class PipelineTests(unittest.TestCase):
@@ -241,7 +241,7 @@ class PipelineTests(unittest.TestCase):
         data = rows(outputs[0])
         self.assertTrue(data)
         self.assertTrue(all(set(r['gene_name'].split(';')) <= {'SMN1', 'SMN2'} for r in data))
-        self.assertTrue(all(r['pipeline_version'] == '3.9.1' for r in data))
+        self.assertTrue(all(r['pipeline_version'] == '3.9.2' for r in data))
 
     def test_chm13_longest_exon_scores_separate_main_mane_calls(self):
         data_dir = ROOT.parent / 'test/regression/data'

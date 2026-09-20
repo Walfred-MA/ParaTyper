@@ -1,10 +1,12 @@
 # Repository preparation checks
 
-Version 3.9.1 corrects full-gene chaining across disconnected target loci. All
-133 regression tests passed with Python 3.10.21 in both the public repository
+Version 3.9.2 limits gaps between consecutive full-gene alignment blocks to
+1.5 times the reference gene's genomic span. All
+134 regression tests passed with Python 3.10.21 in both the public repository
 and the local transcript source tree. New cases cover both strands, touching
-versus disconnected padded windows, insertion scoring within a locus, separate
-gene parents, and reference spans containing unaligned exons.
+versus excessive gaps, insertion scoring within a locus, separate gene parents,
+and reference spans containing unaligned exons. The integration test verifies
+the 1.5-times cutoff and one base beyond it for odd and even reference spans.
 
 Replaying 47,552 saved NBPF/CHM13 exon alignments reproduced the old NBPF20 call
 at `NC_060925.1:16173421-144542504` (128,369,083 bp). With the correction, the
