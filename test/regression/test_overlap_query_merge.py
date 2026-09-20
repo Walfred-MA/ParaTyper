@@ -81,6 +81,55 @@ class OverlapQueryTests(unittest.TestCase):
             self.assertEqual(alias.anchor_start0,0)
             self.assertEqual(query.target.sequence[alias.anchor_start0:alias.anchor_end0],alias.exon.sequence)
 
+    def test_same_name_merges_different_gene_ids_and_preserves_alias_metadata(self):
+        exons = [extracted('E1',100,200,self.genome,gene='G1'),
+                 extracted('E2',180,260,self.genome,gene='G2')]
+        for exon in exons:
+            exon.record.gene_names = ['SYMBOL']
+        query, = b.merge_overlapping_exon_queries(exons)
+        self.assertEqual((query.target.record.start0,query.target.record.end0),(100,260))
+        self.assertEqual(set(query.target.record.gene_ids),{'G1','G2'})
+        self.assertEqual([x.exon.record.gene_ids for x in query.aliases],[['G1'],['G2']])
+        self.assertEqual([x.exon.record.transcript_ids for x in query.aliases],[['E1T'],['E2T']])
+        for alias in query.aliases:
+            self.assertEqual(query.target.sequence[alias.anchor_start0:alias.anchor_end0],
+                             alias.exon.sequence)
+        # The query identity follows the common name, independent of ID order.
+        query_id = query.target.record.exon_id
+        exons[0].record.gene_ids, exons[1].record.gene_ids = ['G2'], ['G1']
+        reordered, = b.merge_overlapping_exon_queries(list(reversed(exons)))
+        self.assertEqual(reordered.target.record.exon_id,query_id)
+
+    def test_gene_name_takes_precedence_over_id(self):
+        exons = [extracted('E1',100,200,self.genome),
+                 extracted('E2',180,260,self.genome)]
+        exons[0].record.gene_names = ['FIRST']
+        exons[1].record.gene_names = ['SECOND']
+        self.assertEqual(len(b.merge_overlapping_exon_queries(exons)),2)
+
+    def test_missing_names_fall_back_to_ids_without_merging_unrelated_records(self):
+        exons = [extracted(f'E{i}',100+i,200+i,self.genome,gene=gene)
+                 for i,gene in enumerate(['G1','G1','G2','G3','G4','G5'])]
+        for exon in exons:
+            exon.record.gene_names = []
+        exons[1].record.gene_names = ['', '.', ' ']
+        # A name matching another record's ID must not collide with its fallback.
+        exons[3].record.gene_names = ['G2']
+        exons[4].record.gene_ids = []
+        exons[5].record.gene_ids = []
+        groups = {frozenset(x.exon.record.exon_id for x in q.aliases)
+                  for q in b.merge_overlapping_exon_queries(exons)}
+        self.assertEqual(groups,{frozenset({'E0','E1'}),frozenset({'E2'}),
+                                 frozenset({'E3'}),frozenset({'E4'}),frozenset({'E5'})})
+
+    def test_gene_name_sets_merge_independent_of_metadata_order(self):
+        exons = [extracted('E1',100,200,self.genome,gene='G1'),
+                 extracted('E2',180,260,self.genome,gene='G2')]
+        exons[0].record.gene_names = ['B','A','B']
+        exons[1].record.gene_names = ['A','B']
+        query, = b.merge_overlapping_exon_queries(exons)
+        self.assertEqual(len(query.aliases),2)
+
 
 def alias(identifier, core_start, core_end, anchor_start, anchor_end):
     return a.ExonAlias(identifier+'.1',identifier,'chr1',core_start,core_end,'+',

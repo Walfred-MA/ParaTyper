@@ -234,12 +234,24 @@ def genomic_query_span(exon: ExtractedExon) -> Tuple[int, int]:
     return rec.start0 - left, rec.end0 + right
 
 
+def exon_query_gene_key(record: ExonRecord) -> Tuple[str, Tuple[str, ...]]:
+    """Prefer gene names for query unions; fall back to IDs for unnamed genes."""
+    names = tuple(sorted({name.strip() for name in record.gene_names
+                          if name.strip() not in {"", "."}}))
+    if names:
+        return "gene_name", names
+    ids = tuple(sorted({gene.strip() for gene in record.gene_ids
+                        if gene.strip() not in {"", "."}}))
+    return "gene_id", ids
+
+
 def merge_overlapping_exon_queries(
     exons: Sequence[ExtractedExon], merge_overlapping: bool = True
 ) -> List[ExonQuery]:
-    """Union intersecting core intervals within a gene/contig/strand only.
+    """Union intersecting core intervals within a gene name/contig/strand.
 
-    Shared reference-gene units (e.g. GA&GB) already have one gene identity.
+    Unnamed genes fall back to gene ID. Shared reference-gene units (e.g.
+    GA&GB) already have one name. Gene IDs remain in the original metadata.
     Flank overlap alone never joins separate exons. Each union keeps every
     original exon and its anchored interval in query-oriented coordinates.
     """
@@ -247,11 +259,11 @@ def merge_overlapping_exon_queries(
     components = []
     for exon in exons:
         rec = exon.record
-        genes = tuple(sorted(set(rec.gene_ids)))
-        if not genes or not merge_overlapping:
+        gene_key = exon_query_gene_key(rec)
+        if not gene_key[1] or not merge_overlapping:
             components.append([exon])
             continue
-        key = (rec.chrom, rec.strand, genes)
+        key = (rec.chrom, rec.strand, gene_key)
         by_gene[key].append(exon)
 
     for key in sorted(by_gene):
@@ -295,7 +307,7 @@ def merge_overlapping_exon_queries(
                 sequence = revcomp(sequence)
                 left_anchor, right_anchor = right_anchor, left_anchor
             identity = json.dumps([first.chrom, first.strand, start, end,
-                                   sorted(set(first.gene_ids))], separators=(",", ":"))
+                                   exon_query_gene_key(first)], separators=(",", ":"))
             query_id = "PTEXON_" + hashlib.sha256(identity.encode()).hexdigest()
             fields = {
                 name: [value for exon in component for value in getattr(exon.record, name)]
