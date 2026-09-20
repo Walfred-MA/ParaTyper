@@ -21,7 +21,7 @@ Missing or weak exon evidence can also reflect assembly gaps, divergent sequence
 
 ## 2. Install
 
-Use Linux or macOS with **Python 3.9 or newer** and NCBI **BLAST+** (`blastn`, `makeblastdb`, and `blastdbcmd`). The core Python scripts use only the standard library. On Windows, use a Linux environment such as WSL.
+Use Linux or macOS with **Python 3.9 or newer**, **minimap2 2.26 or newer**, and NCBI **BLAST+** (`blastn`, `makeblastdb`, and `blastdbcmd`). The core Python scripts use only the standard library. On Windows, use a Linux environment such as WSL.
 
 Clone this repository, enter its directory, then create the environment:
 
@@ -34,9 +34,9 @@ python scripts/install.py
 python scripts/annotate_assemblies.py --version
 ```
 
-`mamba env create -f environment.yml` is an alternative. If Python and BLAST+ are already installed, no package installation is required: run the scripts directly. `scripts/install.py` checks the scripts and executables; if BLAST+ is missing, it installs it with mamba into the active conda environment. It does not create an environment.
+`mamba env create -f environment.yml` is an alternative. If Python, BLAST+, and minimap2 are already installed, no package installation is required: run the scripts directly. `scripts/install.py` checks the scripts and executables; it installs missing BLAST+ or minimap2 tools with mamba into the active conda environment. It does not create an environment.
 
-Check the bundled regression tests without downloading genomes or installing BLAST+:
+Check the bundled regression tests without downloading genomes (live search tests skip when their external tools are unavailable):
 
 ```bash
 python -m unittest discover -s test/regression -v
@@ -141,33 +141,36 @@ python scripts/annotate_assemblies.py \
 
 Both uncompressed `.gff3` and compressed `.gff3.gz` annotations are accepted. Whole-genome annotation is substantially larger than the SMN example; the bundled regression suite does not benchmark its runtime or memory requirements.
 
-The first BLAST pass searches exon queries in sequential batches of at most **51 MB**
-(51,000,000 FASTA bytes, including headers). Each batch uses the requested
-`--blast-threads` count and the same complete assembly database. All batches
-contribute to one alignment table before transcript calling. Original exon
-mappings and case masking are preserved. Temporary FASTA headers contain
-only exon IDs; descriptions and transcript metadata remain in the reference files.
+Minimap2 performs candidate discovery with the requested `--blast-threads` count.
+For local BLAST, that same setting controls **concurrent gene jobs, with exactly
+one BLAST thread per gene**. For example, `--blast-threads 32` runs up to 32 genes
+at once per assembly. Each gene has separate scratch files and database files;
+results are streamed through temporary files instead of buffered in memory.
+Progress reports completed gene jobs against the actual local-search total.
+With `--jobs` greater than one, each assembly receives its own worker budget.
 
-The script sets `BLAST_MT_QUERY_BATCH_SIZE=1000000` for exon-query BLAST
-processes unless you explicitly set this environment variable yourself. This
-gives BLAST's ThreadByQuery mode chunks of roughly 1 million sequence bases,
-allowing more workers to share a 51 MB batch. BLAST still chooses its threading
-mode automatically. The effective chunk size is logged. More active workers
-may increase RAM use; compare runtime and peak memory on your inputs.
+Minimap2 uses internal batches of **50 million query bases** (`-K50000000`),
+configurable with `--minimap-batch-bases`. It builds one temporary index per
+assembly and searches all exon queries against it. This is different from the
+local BLAST limit of **51 MB per query FASTA batch** (51,000,000 bytes, including
+headers), controlled by `--blast-query-batch-bytes`. Neither setting is a hard
+RAM limit. Concurrent local jobs also share the machine's RAM and storage I/O.
 
-Use `--blast-query-batch-bytes 50000000` for smaller 50 MB batches, or
-`--blast-query-batch-bytes 0` to compare with the original unbatched search.
-Smaller batches may take longer because they rescan the assembly. This controls
-query-file size, not a hard RAM limit. A single exon record exceeding the limit
-causes an error rather than being split or dropped. Batch sizes and thread counts
-are logged; completed batch files are reused and removed with the temporary database.
-These options affect exon-query searches, not parsing of existing alignment files.
+Local BLAST batches preserve whole queries and case masking. Temporary query
+headers contain only exon IDs. A record exceeding the byte limit causes an error
+rather than being split or dropped. Use `--blast-query-batch-bytes 0` to disable
+local query batching. All batches contribute evidence before transcript calling.
+
+If sample tables already exist, use `--force-samples` to regenerate them with
+the new search strategy. Updating scripts does not change a process already
+running. An existing database with dynamic anchors and gene-span metadata can
+be reused; older databases need `--force-rebuild-database`.
 
 ## 4. Method and output formats
 
 ### How the pipeline works
 
-1. **Prepare reference exons.** Read GENCODE-style GFF3 gene/transcript/exon relationships, extract exon DNA with dynamic flanking anchors: exons shorter than 150 bp receive `ceil((150 − length) / 2)` bases on each side, clipped at contig boundaries; exons of 150 bp or longer receive no anchors, and retain anchored sequences with at least 50 uppercase A/C/G/T bases by default. The reference FASTA must contain the GFF3's contigs. Keep exon IDs, exon numbers, gene/transcript IDs, biotypes, and MANE tags when preparing custom subsets.
+1. **Prepare reference exons.** Read GENCODE-style GFF3 gene/transcript/exon relationships, extract exon DNA with dynamic flanking anchors: exons shorter than 150 bp receive `ceil((150 − length) / 2)` bases on each side, clipped at contig boundaries; exons of 150 bp or longer receive no anchors. Retain anchored sequences with at least 50 uppercase A/C/G/T bases by default. The reference FASTA must contain the GFF3's contigs. Keep exon IDs, exon numbers, gene/transcript IDs, biotypes, and MANE tags when preparing custom subsets.
 2. **Define gene units.** Genes sharing more than 100 bp of exonic reference coordinates on the same contig and strand are merged transitively into shared-exon units. Separately, genes with exactly identical sets of spliced MANE DNA sequences are represented by the first gene in GFF3 order, named `<gene>merged`. This identity includes UTRs; it is not proof that all non-MANE isoforms are identical. Shared-exon groups retain their member isoforms and do not use this representative-only shortcut.
 3. **Merge queries, then align to the target.** Before BLAST, overlapping core exons with the same gene name, contig, and strand are replaced by one union query with flanking anchors. Records without a gene name fall back to gene ID; original gene IDs are retained in the metadata. Shared reference-gene units use their combined name. Partial overlaps merge transitively; flank overlap alone does not join separate exons. Every original exon ID, boundary, and transcript association is retained in the alias metadata. Each gapped BLAST hit is projected back to each original exon and its own anchors. Defaults then require anchored coverage ≥90%, identity >95%, and alignment score >50 **per original exon**. Core-exon coordinates, CIGARs, identities, and scores are recalculated from the projected alignment.
 4. **Assign gene copies.** Merge overlapping target exon hits, score each interval for each gene using its longest eligible aligned reference exon, and chain synthetic full-gene exon-union models. Gene-level competition has no protein-coding preference, allowing pseudogenes to compete on the same score scale.
@@ -176,16 +179,19 @@ These options affect exon-query searches, not parsing of existing alignment file
 
 The default alignment strategy has two passes:
 
-- **Coarse assembly search:** `-word_size 50 -evalue 1e-100`, with the existing `-perc_identity 95` cutoff. All returned HSP positions seed windows, including hits that do not pass the later per-exon coverage filter.
+- **Minimap2 candidate discovery:** map representative exon queries as genomic DNA using `-k19 -w5 -n3 -m40 -P --secondary=yes -f1000 --q-occ-frac=0 --no-long-join -g1000`. This produces approximate PAF positions without base-level alignment. `-P` avoids the usual primary/secondary score and count selection; seed-frequency and chain filters still apply, so recovery of every possible locus is not guaranteed. Keep MAPQ-zero candidates. Do not apply the final exon identity, coverage, or BLAST E-value cutoffs to these approximate chains.
 - **Candidate windows:** extend each hit by **1.5 × the gene's genomic span on each side**, clip to the target contig, sort, and merge overlapping or touching windows for that gene and contig. Gene span runs from the first original annotated exon start to the last exon end, including introns. Gene names are used when present, otherwise gene IDs; reference contigs and strands remain separate. The builder records the span before sequence filtering.
-- **Check each disconnected window independently:** project coarse alignments to the original eligible exons and apply the usual identity, coverage, and score filters. Skip local realignment only if **every original exon has the same positive hit count** in that window. Counts `[1,1,1]` and `[2,2,2]` both pass, even in different windows; `[1,0,1]` and `[1,2,1]` trigger realignment. Overlapping HSPs for the same exon and strand count as one hit.
-- **Local search:** use `blastdbcmd` to extract windows requiring realignment, then search all representative queries belonging to that gene with `-word_size 19 -evalue 1e-30`. Local target databases preserve BLAST multithreading. Query batches retain the byte limit. Results are remapped to full assembly coordinates and projected only to that gene's original exon aliases. Local results replace coarse results inside refined windows; balanced windows keep their coarse results. Local E-values use the local window database's search space.
+- **Local BLAST in every candidate window:** use `blastdbcmd` to extract the windows, then search all representative queries belonging to that gene with `-word_size 19 -evalue 1e-30 -num_threads 1`. Run different genes concurrently within the requested thread budget. Results are remapped to full assembly coordinates and projected only to that gene's original exon aliases before the usual identity, coverage, and score filters. Local E-values use the local window database's search space.
 
-Dynamic anchors are calculated for each original exon before query merging; a union query retains any flanks needed by its short-exon aliases. The first-pass hit store is kept on disk. Logs report the number of seeded gene loci, skipped windows, refined windows, and genes with no seed.
+**Balanced-window skipping is disabled in the default minimap2 mode.** Approximate chains are used only to choose search regions; they do not supply final exon hit counts or mutations. Every candidate window receives detailed local BLAST.
 
-**Sensitivity limit:** a locus with no first-pass hit has no candidate window and cannot be recovered by this local search. In particular, a roughly 150 bp query can fail `1e-100` even at a perfect match. Short exons can be recovered near another exon that seeds a window; isolated short fragments and genes lacking any strong seed may be missed. Equal hit counts are a shortcut, not proof that every possible copy has been found. Whole-genome runtime and memory savings still need measurement on the intended inputs.
+Dynamic anchors are calculated for each original exon before query merging; a union query retains any flanks needed by its short-exon aliases. Candidate positions are stored on disk. Logs report seeded gene loci, candidate windows, the actual number of local gene jobs, worker count, and completed jobs.
 
-The Python runner and aligner expose `--word-size 50 --evalue 1e-100` for the first pass and `--local-word-size 19 --local-evalue 1e-30` for local searches. The builder and runner use `--anchor-target-length 150`. The aligner's `--no-local-realignment` option runs only the coarse pass for diagnostic comparisons; `--blast-tabular` parses supplied evidence without launching either search.
+**Sensitivity limit:** a locus with no candidate seed has no window and cannot be recovered locally. Short or repetitive fragments can still be missed. Whole-genome runtime and memory savings need measurement on the intended inputs.
+
+The Python runner and aligner default to `--candidate-aligner minimap2` and accept a custom executable through `--minimap2`. Local search settings are `--local-word-size 19 --local-evalue 1e-30`; the builder and runner use `--anchor-target-length 150`.
+
+For comparisons, `--candidate-aligner blast` retains the earlier first pass (`--word-size 50 --evalue 1e-100`). Only that mode skips each disconnected window when every original eligible exon has the same positive count of filtered hits: `[1,1,1]` or `[2,2,2]` pass; `[1,0,1]` or `[1,2,1]` require local BLAST. Overlapping HSPs for the same exon and strand count once. Its local searches also run one thread per gene, across concurrent genes. `--no-local-realignment` is a BLAST-first diagnostic option; `--blast-tabular` parses existing BLAST evidence without launching searches. The strict `1e-100` threshold can exclude even perfectly matching short queries in BLAST-first mode; minimap2 does not use this threshold.
 
 The reference query FASTA includes all annotated `exon` features, including UTRs and noncoding transcripts, across the contigs supplied in the annotation and reference. It is larger than the protein-coding exome: flanking anchors and descriptive FASTA headers add further bytes. Gene names do not join different contigs, strands, or disjoint core intervals; exact-sequence deduplication can still share identical anchored queries across loci. After updating the query grouping or anchor strategy, use `--force-rebuild-database` to regenerate an existing database.
 

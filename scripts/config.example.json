@@ -9,6 +9,8 @@
   "blast_threads": 8,
   "blast_query_batch_bytes": 51000000,
   "caller_threads": 8,
+  "candidate_aligner": "minimap2",
+  "minimap_batch_bases": 50000000,
   "word_size": 50,
   "evalue": "1e-100",
   "local_word_size": 19,

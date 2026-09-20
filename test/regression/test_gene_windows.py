@@ -88,7 +88,7 @@ class WindowTests(unittest.TestCase):
                     w.extract_windows(args, a, 'db', tmp, [('chr1', 0, 100)])
 
 
-@unittest.skipUnless(all(shutil.which(cmd) for cmd in ('blastn','makeblastdb','blastdbcmd')), 'BLAST+ required')
+@unittest.skipUnless(all(shutil.which(cmd) for cmd in ('blastn','makeblastdb','blastdbcmd','minimap2')), 'BLAST+ required')
 class LiveWindowTests(unittest.TestCase):
     def test_local_rescue_reverse_remapping_balanced_skip_and_unseeded_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -115,11 +115,14 @@ class LiveWindowTests(unittest.TestCase):
                               '\n>short\n' + b_copy +
                               '\n>unseeded\n' + genome[3450:3630] + '\n')
             results = {}
-            for mode in ('coarse', 'two_stage'):
+            for mode in ('coarse', 'two_stage', 'minimap_serial', 'minimap_parallel'):
                 out = folder/(mode+'.tsv')
                 command = [sys.executable, str(ROOT/'align_exon_blastdb_v2.py'),
                            '--query', str(target), '--db', prefix, '--output', str(out),
-                           '--exons-as-query', '--threads', '2', '--blast-query-batch-bytes','500']
+                           '--exons-as-query', '--threads', '1' if mode == 'minimap_serial' else '2',
+                           '--blast-query-batch-bytes','500']
+                if not mode.startswith('minimap'):
+                    command += ['--candidate-aligner', 'blast']
                 if mode == 'coarse':
                     command += ['--no-local-realignment']
                 result = subprocess.run(command, text=True, capture_output=True)
@@ -134,6 +137,18 @@ class LiveWindowTests(unittest.TestCase):
                     self.assertIn('-evalue 1e-30', result.stderr)
                     self.assertIn('1 balanced (skip), 3 require local realignment', result.stderr)
                     self.assertIn('1 gene loci have no seed', result.stderr)
+                    self.assertIn('Local realignment completed 2/2 genes', result.stderr)
+                if mode.startswith('minimap'):
+                    self.assertIn('First pass (minimap2)', result.stderr)
+                    self.assertIn('balanced-window skipping disabled', result.stderr)
+                    self.assertIn('Local realignment completed 3/3 genes', result.stderr)
+                    self.assertIn('1 BLAST thread per gene', result.stderr)
+                    self.assertNotIn('-evalue 1e-100', result.stderr)
+                    self.assertIn('-num_threads 1', result.stderr)
+                    self.assertNotIn('-num_threads 2', result.stderr)
+                    self.assertIn('up to 1 concurrent genes' if mode == 'minimap_serial' else 'up to 2 concurrent genes', result.stderr)
+            normalize = lambda data: sorted(tuple(sorted(row.items())) for row in data)
+            self.assertEqual(normalize(results['minimap_serial']), normalize(results['minimap_parallel']))
             coarse = results['coarse']; final = results['two_stage']
             def coords(data, exon, contig):
                 return sorted((int(r['query_start']), int(r['query_end']), r['strand'])
@@ -144,6 +159,9 @@ class LiveWindowTests(unittest.TestCase):
             self.assertFalse(coords(coarse,'B2','short'))
             self.assertEqual(coords(final,'B2','short'), [(700,780,'+')])
             self.assertFalse(any(r['exon_id']=='C1' for r in final))
+            self.assertEqual(coords(results['minimap_parallel'], 'C1', 'unseeded'), [(50,130,'+')])
+            self.assertEqual(coords(results['minimap_parallel'], 'B2', 'short'), [(700,780,'+')])
+            self.assertEqual(coords(results['minimap_parallel'], 'A2', 'reverse'), [(100,400,'-')])
             # Refinement replaces coarse evidence rather than duplicating it.
             self.assertEqual(coords(final,'A1','NC_060925.1'), [(100,400,'+'), (11200,11500,'+')])
             self.assertEqual(len({tuple(sorted(row.items())) for row in final}), len(final))

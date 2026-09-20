@@ -211,7 +211,7 @@ class LiveOverlapMergeTests(unittest.TestCase):
                 aln=folder/f'align{merged}.tsv'
                 command=[sys.executable,str(ROOT/'align_exon_blastdb_v2.py'),'-q',str(assembly),
                          '-d',str(prefix),'-o',str(aln),'--exons-as-query','--threads','2',
-                         '--word-size','19','--evalue','1e-30','--no-local-realignment']
+                         '--word-size','19','--evalue','1e-30','--candidate-aligner','blast','--no-local-realignment']
                 result=subprocess.run(command,text=True,capture_output=True)
                 self.assertEqual(result.returncode,0,result.stderr)
                 self.assertIn('-perc_identity 95.0',result.stderr)

@@ -14,11 +14,12 @@ import sys
 from typing import List
 
 
-CORE_EXECUTABLES = ("blastn", "makeblastdb", "blastdbcmd")
+CORE_EXECUTABLES = ("blastn", "makeblastdb", "blastdbcmd", "minimap2")
 EXECUTABLE_PACKAGES = {
     "blastn": "blast",
     "makeblastdb": "blast",
     "blastdbcmd": "blast",
+    "minimap2": "minimap2",
 }
 CORE_PIPELINE_SCRIPTS = (
     "identical_paralogs.py",
@@ -26,6 +27,7 @@ CORE_PIPELINE_SCRIPTS = (
     "build_exon_blastdb_v2.py",
     "align_exon_blastdb_v2.py",
     "blast_gene_windows.py",
+    "minimap_candidates.py",
     "call_genes_from_exon_alignments_v3.py",
     "annotate_assemblies.py",
 )
@@ -50,7 +52,7 @@ def check_python_scripts(script_dir: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Check the exon/transcript pipeline and install missing BLAST+ "
+            "Check the exon/transcript pipeline and install missing BLAST+ and minimap2 "
             "tools into the active environment."
         )
     )
@@ -67,7 +69,7 @@ def main() -> None:
     missing = missing_executables(required)
     if not missing:
         print("[OK] Python pipeline scripts compile", file=sys.stderr)
-        print("[OK] BLAST+ is available (exon-based pipeline)", file=sys.stderr)
+        print("[OK] BLAST+ and minimap2 are available", file=sys.stderr)
         return
 
     active_prefix = os.environ.get("CONDA_PREFIX", "")

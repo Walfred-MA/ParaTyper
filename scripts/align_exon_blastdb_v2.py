@@ -5,14 +5,13 @@ align_exon_blastdb.polished.py
 Align reference exons to an assembly and write an exon-alignment TSV for the
 transcript caller.
 
-The recommended ``--exons-as-query`` mode builds a temporary BLAST database
-from the assembly, uses the representative exon FASTA as the BLAST query, and
-parses explicit tabular coordinates. A coarse search (word 50, E-value 1e-100)
-seeds per-gene windows padded by 1.5 times the genomic gene span on each side.
-Windows with unequal or missing original-exon hit counts are realigned locally
-(word 19, E-value 1e-30). Temporary databases use ``$SLURM_TMPDIR`` when
-available and are removed after the job. ``-max_target_seqs`` caps target
-sequence records, not the number of HSPs on a chromosome.
+The recommended ``--exons-as-query`` mode uses minimap2 chains to discover
+candidate windows, padded by 1.5 times the genomic gene span on each side.
+Every candidate window is then searched with BLAST (word 19, E-value 1e-30).
+Local searches run concurrently across genes, with one BLAST thread per gene.
+Temporary databases use ``$SLURM_TMPDIR`` when available and are removed after
+the job. The earlier BLAST-first strategy remains selectable for comparisons.
+``-max_target_seqs`` caps target sequence records, not HSPs on a chromosome.
 
 The original assembly-query/SAM mode remains available for backward
 compatibility.
@@ -1102,7 +1101,12 @@ def iter_exon_query_lines(args: argparse.Namespace, refine=None) -> Iterator[str
         # the SLURM .out/.err stream rather than being hidden by Snakemake.
         subprocess.run(make_cmd, check=True)
 
-        with closing(iter_database_query_lines(args, assembly_db, work_dir)) as lines:
+        if getattr(args, "candidate_aligner", "blast") == "minimap2":
+            from minimap_candidates import iter_minimap_candidates
+            candidates = iter_minimap_candidates(args, work_dir)
+        else:
+            candidates = iter_database_query_lines(args, assembly_db, work_dir)
+        with closing(candidates) as lines:
             if refine is None:
                 yield from lines
             else:
@@ -1182,7 +1186,7 @@ def main() -> None:
     parser.add_argument("-q", "--query", required=True, help="input assembly FASTA")
     parser.add_argument("-d", "--db", required=True, help="reference exon prefix from build_exon_blastdb_v2.py")
     parser.add_argument("-o", "--output", required=True, help="output TSV")
-    parser.add_argument("-t", "--threads", type=int, default=1, help="BLAST threads [1]")
+    parser.add_argument("-t", "--threads", type=int, default=1, help="first-pass threads and maximum concurrent local genes; local BLAST uses one thread per gene [1]")
     parser.add_argument(
         "--blast-query-batch-bytes", type=int, default=DEFAULT_BLAST_QUERY_BATCH_BYTES,
         help="maximum query FASTA bytes per sequential BLAST run; whole exons stay intact; 0 disables batching [51000000]",
@@ -1202,6 +1206,9 @@ def main() -> None:
     parser.add_argument("--max-target-seqs", type=int, default=100, help="BLAST -max_target_seqs; caps target sequence records, not HSPs [100]")
     parser.add_argument("--blastn", default="blastn", help="path to blastn [blastn]")
     parser.add_argument("--blastdbcmd", default="blastdbcmd", help="path to blastdbcmd")
+    parser.add_argument("--candidate-aligner", choices=("minimap2", "blast"), default="minimap2", help="first-pass search [minimap2]; blast retains the earlier balanced-window strategy for comparison")
+    parser.add_argument("--minimap2", default="minimap2", help="minimap2 executable")
+    parser.add_argument("--minimap-batch-bases", type=int, default=50000000, help="minimap2 internal query batch bases (-K), not a RAM cap [50000000]")
     parser.add_argument("--local-word-size", type=int, default=19, help="local BLAST word size [19]")
     parser.add_argument("--local-evalue", default="1e-30", help="local BLAST E-value [1e-30]")
     parser.add_argument("--no-local-realignment", action="store_true", help="run only the first pass (diagnostic mode)")
@@ -1245,6 +1252,11 @@ def main() -> None:
     )
     parser.add_argument("--no-header", action="store_true", help="do not write header for extended output")
     args = parser.parse_args()
+    if args.threads < 1 or args.minimap_batch_bases < 1:
+        parser.error("--threads and --minimap-batch-bases must be positive")
+    if (args.exons_as_query and not args.blast_tabular and args.candidate_aligner == "minimap2"
+            and args.no_local_realignment):
+        parser.error("minimap2 candidates require local realignment; use --candidate-aligner blast for first-pass-only diagnostics")
     if args.blast_query_batch_bytes < 0:
         parser.error("--blast-query-batch-bytes must be nonnegative")
     if args.no_qcov_hsp_perc:
@@ -1316,7 +1328,7 @@ def main() -> None:
     if args.merged_exon_queries and args.qcov_hsp_perc is not None:
         min_coverage = max(min_coverage, args.qcov_hsp_perc)
 
-    with open(args.output, "w", encoding="utf-8") as out:
+    with closing(alignment_lines), open(args.output, "w", encoding="utf-8") as out:
         if args.output_format == "extended" and not args.no_header:
             out.write("\t".join(EXTENDED_HEADER) + "\n")
         for line in alignment_lines:

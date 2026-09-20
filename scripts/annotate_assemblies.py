@@ -436,6 +436,9 @@ def make_alignment_command(
         "--makeblastdb",
         args.makeblastdb,
         "--blastdbcmd", args.blastdbcmd,
+        "--candidate-aligner", args.candidate_aligner,
+        "--minimap2", args.minimap2,
+        "--minimap-batch-bases", str(args.minimap_batch_bases),
         "--local-word-size", str(args.local_word_size),
         "--local-evalue", args.local_evalue,
     ]
@@ -746,7 +749,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--python", default=sys.executable, help="Python executable used for pipeline scripts [current Python]")
 
     parser.add_argument("--jobs", type=positive_int, default=1, help="assemblies processed concurrently [1]")
-    parser.add_argument("--blast-threads", type=positive_int, default=16, help="BLAST threads per assembly [16]")
+    parser.add_argument("--blast-threads", type=positive_int, default=16, help="first-pass threads per assembly and concurrent local genes (one BLAST thread each) [16]")
     parser.add_argument(
         "--blast-query-batch-bytes", type=nonnegative_int, default=51_000_000,
         help="maximum query FASTA bytes per sequential BLAST run; whole exons stay intact; 0 disables batching [51000000]",
@@ -783,6 +786,9 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--blastn", default="blastn", help="blastn executable [blastn]")
     parser.add_argument("--blastdbcmd", default="blastdbcmd", help="blastdbcmd executable")
+    parser.add_argument("--candidate-aligner", choices=("minimap2", "blast"), default="minimap2", help="first-pass search [minimap2]; blast is available for comparison")
+    parser.add_argument("--minimap2", default="minimap2", help="minimap2 executable")
+    parser.add_argument("--minimap-batch-bases", type=positive_int, default=50000000, help="minimap2 internal query batch bases (-K) [50000000]")
     parser.add_argument("--local-word-size", type=positive_int, default=19, help="local realignment word size [19]")
     parser.add_argument("--local-evalue", default="1e-30", help="local realignment E-value [1e-30]")
     parser.add_argument("--makeblastdb", default="makeblastdb", help="makeblastdb executable [makeblastdb]")

@@ -149,7 +149,7 @@ class QueryBatchTests(unittest.TestCase):
         self.assertEqual(list(self.folder.iterdir()), [self.query])
 
 
-@unittest.skipUnless(shutil.which('blastn') and shutil.which('makeblastdb'),
+@unittest.skipUnless(shutil.which('blastn') and shutil.which('makeblastdb') and shutil.which('minimap2'),
                      'BLAST+ is required for the live equivalence check')
 class LiveBlastBatchTests(unittest.TestCase):
     def test_batched_and_unbatched_alignments_and_both_call_tables_match(self):
@@ -171,19 +171,20 @@ class LiveBlastBatchTests(unittest.TestCase):
             queries = folder / 'queries.txt'
             queries.write_text(f'sample {assembly}\n')
             outputs = []
-            for batch_bytes in (0, 250):
+            for batch_bytes, threads in ((0, 1), (250, 2)):
                 output = folder / f'out_{batch_bytes}'
                 command = [sys.executable, str(ROOT / 'annotate_assemblies.py'),
                            '--reference', str(fixture.genome), '--gff3', str(fixture.gff),
                            '--query-list', str(queries), '--exon-database-dir', str(folder / 'db'),
                            '--output', str(output), '--anchor-target-length', '14', '--min-unmasked', '0',
-                           '--blast-threads', '2', '--caller-threads', '1',
+                           '--blast-threads', str(threads), '--caller-threads', '1',
                            '--blast-query-batch-bytes', str(batch_bytes)]
                 result = subprocess.run(command, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 if batch_bytes:
-                    self.assertIn('BLAST query batch 2:', result.stderr)
-                    self.assertIn('-num_threads 2', result.stderr)
+                    self.assertIn('Local BLAST query batch 2:', result.stderr)
+                    self.assertIn('-num_threads 1', result.stderr)
+                    self.assertIn('up to 2 concurrent genes', result.stderr)
                 call_dir = output / 'sample'
                 calls = call_dir / 'sample.transcript_calls.tsv'
                 fragments = next(call_dir.glob('*pseudo*.tsv'))

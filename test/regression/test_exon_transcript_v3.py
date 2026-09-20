@@ -399,7 +399,7 @@ class PipelineTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(ROOT / script), '--help'],
                                     text=True, capture_output=True, check=True)
             for removed in ('--lift-genome', '--with-full-gene',
-                            '--minimap2', '--samtools', '--stretcher'):
+                            '--samtools', '--stretcher'):
                 self.assertNotIn(removed, result.stdout)
         self.assertFalse((ROOT / 'GeneLiftover.py').exists())
         self.assertFalse((ROOT / 'GeneGlobalAlign.py').exists())
