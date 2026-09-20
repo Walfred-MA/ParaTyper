@@ -48,7 +48,7 @@ from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
 BL_ORD_RE = re.compile(r"BL_ORD_ID(?::|\|)(\d+)")
-DEFAULT_BLAST_QUERY_BATCH_BYTES = 110_000_000
+DEFAULT_BLAST_QUERY_BATCH_BYTES = 51_000_000
 IUPAC_MASKS = dict(zip("ACMGRSVTWYHKDBN", (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)))
 
 
@@ -1147,7 +1147,7 @@ def main() -> None:
     parser.add_argument("-t", "--threads", type=int, default=1, help="BLAST threads [1]")
     parser.add_argument(
         "--blast-query-batch-bytes", type=int, default=DEFAULT_BLAST_QUERY_BATCH_BYTES,
-        help="maximum query FASTA bytes per sequential BLAST run; whole exons stay intact; 0 disables batching [110000000]",
+        help="maximum query FASTA bytes per sequential BLAST run; whole exons stay intact; 0 disables batching [51000000]",
     )
     parser.add_argument("--min-exon-coverage", type=float, default=90.0, help="minimum anchored-query coverage percentage [90]")
     parser.add_argument("--min-identity", type=float, default=95.0, help="anchored-HSP percent identity must be greater than this value [95]")

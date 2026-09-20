@@ -141,8 +141,8 @@ python scripts/annotate_assemblies.py \
 
 Both uncompressed `.gff3` and compressed `.gff3.gz` annotations are accepted. Whole-genome annotation is substantially larger than the SMN example; the bundled regression suite does not benchmark its runtime or memory requirements.
 
-The BLAST step searches exon queries in sequential batches of at most **110 MB**
-(110,000,000 FASTA bytes, including headers). Each batch uses the requested
+The BLAST step searches exon queries in sequential batches of at most **51 MB**
+(51,000,000 FASTA bytes, including headers). Each batch uses the requested
 `--blast-threads` count and the same complete assembly database. All batches
 contribute to one alignment table before transcript calling. Original exon
 mappings and case masking are preserved. Temporary FASTA headers contain
@@ -221,7 +221,7 @@ Each parent appears before its children, sharing `GENE_index`. The index is uniq
 - `--max-chains-per-transcript` defaults to 10 per transcript/query/strand. Copy-rich loci may require increasing it. `--max-target-seqs` limits BLAST target records, not a direct copy-number threshold.
 - The runner defaults to `--query-coordinate-mode local`. The standalone caller defaults to `header-suffix`, interpreting a name ending `_start_end` as a sliced-region offset. Explicitly choose `local` for ordinary assembly records.
 - `--jobs` controls simultaneous assemblies; `--blast-threads` and `--caller-threads` apply per assembly. Budget CPUs and memory for concurrent jobs.
-- `--blast-query-batch-bytes` controls the BLAST query FASTA batch limit (default 110,000,000 bytes). The equivalent Snakemake key is `blast_query_batch_bytes`.
+- `--blast-query-batch-bytes` controls the BLAST query FASTA batch limit (default 51,000,000 bytes). The equivalent Snakemake key is `blast_query_batch_bytes`.
 - Compatible exon databases and completed sample tables can be reused. When changing query contents or alignment/calling parameters, use a new output directory or `--force-samples`; sample reuse is not a full parameter-provenance check. Use a separate database directory per annotation set.
 - `--query-fasta` treats each FASTA record as a separate sample. Use `--query-list` for ordinary multi-chromosome assemblies.
 

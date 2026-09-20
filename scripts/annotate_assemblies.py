@@ -745,8 +745,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--jobs", type=positive_int, default=1, help="assemblies processed concurrently [1]")
     parser.add_argument("--blast-threads", type=positive_int, default=16, help="BLAST threads per assembly [16]")
     parser.add_argument(
-        "--blast-query-batch-bytes", type=nonnegative_int, default=110_000_000,
-        help="maximum query FASTA bytes per sequential BLAST run; whole exons stay intact; 0 disables batching [110000000]",
+        "--blast-query-batch-bytes", type=nonnegative_int, default=51_000_000,
+        help="maximum query FASTA bytes per sequential BLAST run; whole exons stay intact; 0 disables batching [51000000]",
     )
     parser.add_argument("--caller-threads", type=positive_int, default=16, help="caller processes per assembly [16]")
     parser.add_argument(
