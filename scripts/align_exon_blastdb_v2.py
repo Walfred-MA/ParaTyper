@@ -49,6 +49,7 @@ from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 CIGAR_RE = re.compile(r"(\d+)([MIDNSHP=X])")
 BL_ORD_RE = re.compile(r"BL_ORD_ID(?::|\|)(\d+)")
 DEFAULT_BLAST_QUERY_BATCH_BYTES = 51_000_000
+DEFAULT_BLAST_MT_QUERY_BATCH_SIZE = 1_000_000
 IUPAC_MASKS = dict(zip("ACMGRSVTWYHKDBN", (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)))
 
 
@@ -1085,6 +1086,19 @@ def iter_exon_query_lines(args: argparse.Namespace) -> Iterator[str]:
         # the SLURM .out/.err stream rather than being hidden by Snakemake.
         subprocess.run(make_cmd, check=True)
 
+        # Smaller ThreadByQuery chunks give workers enough independent work
+        # within each FASTA batch. Respect an explicit environment override.
+        blast_env = os.environ.copy()
+        blast_env.setdefault(
+            "BLAST_MT_QUERY_BATCH_SIZE", str(DEFAULT_BLAST_MT_QUERY_BATCH_SIZE)
+        )
+        print(
+            "BLAST ThreadByQuery chunk size: "
+            f"{blast_env['BLAST_MT_QUERY_BATCH_SIZE']} bases "
+            "(BLAST_MT_QUERY_BATCH_SIZE)",
+            file=sys.stderr,
+        )
+
         # All batches search the same complete database. Stream their evidence
         # through the same alias expansion/deduplication and call transcripts
         # only after every batch succeeds, preserving cross-gene competition.
@@ -1103,7 +1117,7 @@ def iter_exon_query_lines(args: argparse.Namespace) -> Iterator[str]:
                     print("BLAST query batching disabled", file=sys.stderr)
                 cmd = exon_query_blast_command(args, assembly_db, query_path)
                 print("Running:", " ".join(cmd), file=sys.stderr)
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, env=blast_env)
                 assert proc.stdout is not None
                 try:
                     yield from proc.stdout

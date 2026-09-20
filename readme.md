@@ -148,6 +148,13 @@ contribute to one alignment table before transcript calling. Original exon
 mappings and case masking are preserved. Temporary FASTA headers contain
 only exon IDs; descriptions and transcript metadata remain in the reference files.
 
+The script sets `BLAST_MT_QUERY_BATCH_SIZE=1000000` for exon-query BLAST
+processes unless you explicitly set this environment variable yourself. This
+gives BLAST's ThreadByQuery mode chunks of roughly 1 million sequence bases,
+allowing more workers to share a 51 MB batch. BLAST still chooses its threading
+mode automatically. The effective chunk size is logged. More active workers
+may increase RAM use; compare runtime and peak memory on your inputs.
+
 Use `--blast-query-batch-bytes 50000000` for smaller 50 MB batches, or
 `--blast-query-batch-bytes 0` to compare with the original unbatched search.
 Smaller batches may take longer because they rescan the assembly. This controls

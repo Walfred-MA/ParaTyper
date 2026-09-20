@@ -103,6 +103,35 @@ class QueryBatchTests(unittest.TestCase):
             self.assertEqual(cmd[cmd.index('-num_threads') + 1], '32')
         self.assertEqual(list(self.folder.iterdir()), [self.query])
 
+    def test_internal_query_chunks_reach_blast_and_preserve_environment(self):
+        for batch_bytes in (0, 24):
+            for override in (None, '2000000'):
+                with self.subTest(batch_bytes=batch_bytes, override=override):
+                    args = self.args()
+                    args.blast_query_batch_bytes = batch_bytes
+                    environment = {'PATH': '/custom/blast/bin'}
+                    if override is not None:
+                        environment['BLAST_MT_QUERY_BATCH_SIZE'] = override
+                    expected = dict(environment, BLAST_MT_QUERY_BATCH_SIZE=override or '1000000')
+
+                    def launch(command, **kwargs):
+                        self.assertEqual(kwargs['env'], expected)
+                        proc = Mock(stdout=io.StringIO(''))
+                        proc.wait.return_value = proc.poll.return_value = 0
+                        return proc
+
+                    with patch.dict(aligner.os.environ, environment, clear=True), \
+                            patch.object(aligner.subprocess, 'run'), \
+                            patch.object(aligner.subprocess, 'Popen', side_effect=launch) as blast, \
+                            patch('sys.stderr', new_callable=io.StringIO) as log:
+                        list(aligner.iter_exon_query_lines(args))
+                        self.assertEqual(dict(aligner.os.environ), environment)
+                    self.assertEqual(blast.call_count, 3 if batch_bytes else 1)
+                    self.assertIn(
+                        f"BLAST ThreadByQuery chunk size: {expected['BLAST_MT_QUERY_BATCH_SIZE']} bases",
+                        log.getvalue(),
+                    )
+
     def test_failed_batch_stops_before_later_queries(self):
         processes = []
 
