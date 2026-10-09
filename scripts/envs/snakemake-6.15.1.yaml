@@ -1,0 +1,8 @@
+name: paratyper-snakemake-6.15.1
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.9
+  - snakemake-minimal=6.15.1
+  - tabulate=0.8.10

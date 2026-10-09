@@ -25,6 +25,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, List, Sequence, Tuple
@@ -90,7 +92,7 @@ def read_queries(path: Path) -> List[AssemblyQuery]:
                     "'sample_name assembly.fasta'"
                 )
             name, fasta_text = fields
-            if not SAMPLE_NAME_RE.fullmatch(name):
+            if name in {".", ".."} or not SAMPLE_NAME_RE.fullmatch(name):
                 raise SystemExit(
                     f"ERROR: {path}:{line_number}: unsafe sample name {name!r}"
                 )
@@ -270,6 +272,25 @@ def validate_database(prefix: Path) -> Tuple[bool, str]:
     return True, "complete anchored-exon database"
 
 
+def current_database(
+    prefix: Path, reference: Path, gff3: Path,
+    anchor_target_length: int, min_unmasked: int, merge_exon_overlap: float,
+) -> Tuple[bool, str]:
+    valid, reason = validate_database(prefix)
+    if valid:
+        manifest = json.loads(Path(str(prefix) + ".manifest.json").read_text())
+        expected = {
+            "reference_identity": file_identity(reference),
+            "gff3_identity": file_identity(gff3),
+            "anchor_target_length": anchor_target_length,
+            "min_unmasked": min_unmasked,
+            "merge_exon_overlap": merge_exon_overlap,
+        }
+        if any(manifest.get(key) != value for key, value in expected.items()):
+            return False, "reference, annotation, or database parameters changed"
+    return valid, reason
+
+
 def run_command(command: Sequence[str], label: str) -> None:
     log(f"[CMD] {label}: {shlex.join(list(command))}")
     subprocess.run(list(command), check=True)
@@ -307,16 +328,10 @@ def ensure_database(
     lock_path = Path(str(prefix) + ".build.lock")
     with lock_path.open("a+", encoding="utf-8") as lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-        valid, reason = validate_database(prefix)
-        if valid:
-            manifest = json.loads(Path(str(prefix) + ".manifest.json").read_text())
-            expected = {
-                "reference_identity": file_identity(reference), "gff3_identity": file_identity(gff3),
-                "anchor_target_length": anchor_target_length, "min_unmasked": min_unmasked,
-                "merge_exon_overlap": merge_exon_overlap,
-            }
-            if any(manifest.get(key) != value for key, value in expected.items()):
-                valid, reason = False, "reference, annotation, or database parameters changed"
+        valid, reason = current_database(
+            prefix, reference, gff3, anchor_target_length, min_unmasked,
+            merge_exon_overlap,
+        )
         if valid and not force:
             log(f"[LOG] Reusing exon database {prefix} ({reason})")
             return False
@@ -548,6 +563,161 @@ def run_one_sample(
     return final_calls
 
 
+def slurm_worker(spec_path: Path, role: str, sample: str = "") -> None:
+    """Run one submitted task from a saved, fully resolved invocation."""
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    args = argparse.Namespace(**spec["args"])
+    for key in ("reference", "gff3", "output", "scripts_dir", "exon_database_dir", "temp_subdir"):
+        setattr(args, key, Path(getattr(args, key)))
+    scripts = load_scripts(args.scripts_dir)
+    prefix = args.exon_database_dir / args.database_prefix
+    if role == "database":
+        ensure_database(
+            prefix, scripts, args.python, args.reference, args.gff3,
+            args.anchor_target_length, args.min_unmasked, args.merge_exon_overlap,
+            args.force_rebuild_database,
+        )
+        return
+    if role != "sample" or sample not in spec["queries"]:
+        raise SystemExit(f"ERROR: invalid Slurm worker task {role!r} {sample!r}")
+    valid, reason = current_database(
+        prefix, args.reference, args.gff3, args.anchor_target_length,
+        args.min_unmasked, args.merge_exon_overlap,
+    )
+    if not valid:
+        raise SystemExit(f"ERROR: exon database is not current: {reason}")
+    query = AssemblyQuery(sample, Path(spec["queries"][sample]))
+    run_one_sample(query, args, scripts, prefix, args.output, args.output / args.temp_subdir)
+
+
+def slurm_command_options(value: str) -> List[str]:
+    try:
+        parts = shlex.split(value)
+    except ValueError as exc:
+        raise SystemExit(f"ERROR: invalid --slurm-command: {exc}") from exc
+    if parts and Path(parts[0]).name == "sbatch":
+        return parts
+    return ["sbatch", *parts]
+
+
+def run_slurm_task(spec_path: Path, role: str, sample: str = "") -> None:
+    """Submit one Snakemake rule as one Slurm job and wait for its exit."""
+    spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+    args = spec["args"]
+    label = sample if role == "sample" else "database"
+    job_dir = Path(args["output"]) / ".slurm" / "jobs"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex[:12]
+    status_path = job_dir / f"{label}.{token}.exit"
+    script_path = job_dir / f"{label}.{token}.sh"
+    command = [args["python"], str(Path(__file__).resolve()),
+               "--_slurm-worker", str(spec_path), role]
+    if sample:
+        command.append(sample)
+    script_path.write_text(
+        "#!/usr/bin/env bash\nset +e\n"
+        + shlex.join(command) + "\nrc=$?\n"
+        + f"printf '%s\\n' \"$rc\" > {shlex.quote(str(status_path))}.tmp.$$\n"
+        + f"mv {shlex.quote(str(status_path))}.tmp.$$ {shlex.quote(str(status_path))}\n"
+        + 'exit "$rc"\n', encoding="utf-8",
+    )
+    script_path.chmod(0o700)
+    options = slurm_command_options(spec["slurm_command"])
+    sbatch = [*options, "--parsable", f"--job-name=ParaTyper-{label}",
+              f"--output={job_dir / (label + '.' + token + '.%j.out')}",
+              f"--error={job_dir / (label + '.' + token + '.%j.err')}",
+              str(script_path)]
+    try:
+        result = subprocess.run(sbatch, check=True, text=True, capture_output=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = getattr(exc, "stderr", "") or str(exc)
+        raise RuntimeError(f"sbatch failed for {label}: {detail.strip()}") from exc
+    job_id = result.stdout.strip().split(";", 1)[0]
+    if not re.fullmatch(r"[0-9]+", job_id):
+        raise RuntimeError(f"sbatch returned no numeric job ID for {label}: {result.stdout!r}")
+    log(f"[SLURM] Submitted {label} as job {job_id}")
+    missing_polls = 0
+    while True:
+        if status_path.is_file():
+            try:
+                code = int(status_path.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                code = -1
+            break
+        try:
+            queue = subprocess.run(
+                ["squeue", "--noheader", "--jobs", job_id, "--format=%i"],
+                check=True, text=True, capture_output=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise RuntimeError(f"cannot check Slurm job {job_id} with squeue: {exc}") from exc
+        if job_id not in queue.stdout.split():
+            missing_polls += 1
+            if missing_polls >= 2:
+                code = -1
+                break
+        else:
+            missing_polls = 0
+        time.sleep(10)
+    log(f"[SLURM] {label} job {job_id} finished with exit code {code}")
+    if code != 0:
+        raise RuntimeError(f"Slurm job {job_id} failed for {label}; see {job_dir}")
+
+
+def run_snakemake_slurm(
+    args: argparse.Namespace, queries: Sequence[AssemblyQuery], database_prefix: Path,
+) -> None:
+    """Let Snakemake 6.15.1 own scheduling, resume state, and the output lock."""
+    if args.query_fasta is not None:
+        raise SystemExit("ERROR: --slurm requires --query-list (one assembly per job)")
+    if args.jobs != 1:
+        raise SystemExit("ERROR: use --slurm N instead of --jobs for Slurm runs")
+    reserved = {query.name for query in queries} & {".slurm", ".snakemake"}
+    if reserved:
+        raise SystemExit(f"ERROR: reserved Slurm output name: {', '.join(sorted(reserved))}")
+    try:
+        version = subprocess.run([args.snakemake, "--version"], check=True,
+                                 text=True, capture_output=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise SystemExit(f"ERROR: cannot run Snakemake {args.snakemake!r}: {exc}") from exc
+    if version != "6.15.1":
+        raise SystemExit(f"ERROR: Snakemake 6.15.1 is required; {args.snakemake!r} reports {version!r}")
+    valid, reason = current_database(
+        database_prefix, args.reference, args.gff3, args.anchor_target_length,
+        args.min_unmasked, args.merge_exon_overlap,
+    )
+    rebuild = args.force_rebuild_database or not valid
+    state_dir = args.output / ".slurm"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    if rebuild:
+        log(f"[SLURM] Exon database preparation required: {reason}")
+    spec_args = {key: str(value) if isinstance(value, Path) else value
+                 for key, value in vars(args).items()}
+    # Snakemake decides which samples need rerunning; a scheduled rule must not
+    # be skipped by the runner's independent output-existence shortcut.
+    spec_args["force_samples"] = True
+    config_path = state_dir / f"run-{uuid.uuid4().hex[:12]}.json"
+    write_json_atomic(config_path, {
+        "args": spec_args,
+        "queries": {query.name: str(query.fasta) for query in queries},
+        "slurm_command": args.slurm_command,
+        "spec_path": str(config_path),
+    })
+    command = [
+        args.snakemake, "--snakefile", str(Path(__file__).resolve().parent / "SlurmSnakefile"),
+        "--directory", str(args.output), "--configfile", str(config_path),
+        "--jobs", str(args.slurm), "--cores", str(args.slurm),
+        "--resources", f"slurm_jobs={args.slurm}",
+        "--rerun-incomplete", "--latency-wait", "60", "--printshellcmds",
+    ]
+    if rebuild:
+        command.extend(["--forcerun", "prepare_database", "annotate_sample"])
+    elif args.force_samples:
+        command.extend(["--forcerun", "annotate_sample"])
+    log(f"[SLURM] {shlex.join(command)}")
+    subprocess.run(command, check=True)
+
+
 def split_combined_call_table(
     combined_calls: Path,
     sample_names: Sequence[str],
@@ -749,6 +919,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--python", default=sys.executable, help="Python executable used for pipeline scripts [current Python]")
 
     parser.add_argument("--jobs", type=positive_int, default=1, help="assemblies processed concurrently [1]")
+    parser.add_argument("--slurm", type=positive_int, metavar="N", help="run at most N Slurm assembly jobs through Snakemake 6.15.1")
+    parser.add_argument("--slurm-command", default="", metavar="OPTIONS", help="quoted sbatch options, e.g. '--account=lab --partition=compute --mem=64G --time=24:00:00 --cpus-per-task=16'")
+    parser.add_argument("--snakemake", default="snakemake", help="Snakemake 6.15.1 executable [snakemake]")
     parser.add_argument("--blast-threads", type=positive_int, default=16, help="first-pass threads per assembly and concurrent local windows (one BLAST thread each) [16]")
     parser.add_argument(
         "--blast-query-batch-bytes", type=nonnegative_int, default=51_000_000,
@@ -794,7 +967,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--makeblastdb", default="makeblastdb", help="makeblastdb executable [makeblastdb]")
     parser.add_argument("--force-rebuild-database", action="store_true", help="rebuild even when a compatible database is present")
     parser.add_argument("--force-samples", action="store_true", help="rerun samples with valid final call tables")
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    # argparse otherwise mistakes a quoted value beginning with --account for
+    # another option, despite the whole sbatch option string being one token.
+    if "--slurm-command" in argv:
+        index = argv.index("--slurm-command")
+        if index + 1 < len(argv):
+            argv[index:index + 2] = ["--slurm-command=" + argv[index + 1]]
+    args = parser.parse_args(argv)
+    if args.slurm_command and args.slurm is None:
+        parser.error("--slurm-command requires --slurm N")
 
     args.reference = resolve_existing_file(args.reference, "reference FASTA")
     args.gff3 = resolve_existing_file(args.gff3, "GFF3")
@@ -819,6 +1001,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    if len(sys.argv) >= 4 and sys.argv[1] == "--_slurm-worker":
+        spec_path = Path(sys.argv[2])
+        role = sys.argv[3]
+        sample = sys.argv[4] if len(sys.argv) > 4 else ""
+        slurm_worker(spec_path, role, sample)
+        return
     args = parse_args()
     scripts = load_scripts(args.scripts_dir)
     queries: List[AssemblyQuery] = []
@@ -841,6 +1029,10 @@ def main() -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     temp_root.mkdir(parents=True, exist_ok=True)
     database_prefix = args.exon_database_dir / args.database_prefix
+
+    if args.slurm is not None:
+        run_snakemake_slurm(args, queries, database_prefix)
+        return
 
     if args.query_fasta is not None:
         log(

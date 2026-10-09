@@ -299,12 +299,34 @@ Each parent appears before its children, sharing `GENE_index`. The index is uniq
 - `--no-full-gene-transcripts` runs transcript-only selection, leaving `GENE_index` blank and the fragment table empty.
 - `--max-chains-per-transcript` defaults to 10 per transcript/query/strand. Copy-rich loci may require increasing it. `--max-target-seqs` limits BLAST target records, not a direct copy-number threshold.
 - The runner defaults to `--query-coordinate-mode local`. The standalone caller defaults to `header-suffix`, interpreting a name ending `_start_end` as a sliced-region offset. Explicitly choose `local` for ordinary assembly records.
-- `--jobs` controls simultaneous assemblies; `--blast-threads` and `--caller-threads` apply per assembly. Budget CPUs and memory for concurrent jobs.
+- `--jobs` controls simultaneous assemblies locally; `--blast-threads` and `--caller-threads` apply per assembly. Budget CPUs and memory for concurrent jobs.
 - `--blast-query-batch-bytes` controls the BLAST query FASTA batch limit (default 51,000,000 bytes). The equivalent Snakemake key is `blast_query_batch_bytes`.
 - Compatible exon databases and completed sample tables can be reused. When changing query contents or alignment/calling parameters, use a new output directory or `--force-samples`; sample reuse is not a full parameter-provenance check. Use a separate database directory per annotation set.
 - `--query-fasta` treats each FASTA record as a separate sample. Use `--query-list` for ordinary multi-chromosome assemblies.
 
 Run `python scripts/annotate_assemblies.py --help` for the available pipeline options.
+
+### Run one Slurm job per assembly
+
+ParaTyper's Slurm launcher uses **Snakemake 6.15.1**, matching the version used by minsetref. Keep the ParaTyper environment active for its Python and alignment tools. Snakemake may be in a separate environment; a compatible environment recipe is [scripts/envs/snakemake-6.15.1.yaml](scripts/envs/snakemake-6.15.1.yaml). Pass its executable with `--snakemake` if it is not on `PATH`.
+
+Use the same reference, annotation, query list, database directory, and output directory as in step 4, replacing `--jobs` with:
+
+```bash
+python scripts/annotate_assemblies.py \
+  --reference data/GRCh38.p14.genome.fa \
+  --gff3 data/gencode.v50.chr_patch_hapl_scaff.annotation.gff3 \
+  --query-list query_paths.txt \
+  --exon-database-dir work/gencode_v50_database \
+  --output results/gencode_v50_cohort \
+  --blast-threads 16 --caller-threads 16 \
+  --slurm 20 \
+  --slurm-command='--account=MY_ACCOUNT --partition=compute --mem=64G --time=24:00:00 --cpus-per-task=16'
+```
+
+`--slurm 20` allows at most 20 concurrent Slurm jobs; each assembly is submitted as one job. A preparation job runs first when this output directory has no database marker or the shared exon database is stale; it reuses a valid database. The `--slurm-command` string is passed as `sbatch` options, so set memory, time, CPUs, partition, and account for your cluster. Keep `--cpus-per-task` at least as large as the larger of `--blast-threads` and `--caller-threads`.
+
+Snakemake holds its lock in `OUTPUT/.snakemake/` until all submitted jobs finish. ParaTyper keeps submission scripts, exit files, and Slurm logs under `OUTPUT/.slurm/jobs/`. Leave the launcher running while jobs are active. Repeating the command reuses completed outputs. If the launcher was killed, wait until its Slurm jobs have exited before clearing the stale lock with Snakemake's `--unlock` command for that output directory.
 
 An optional [Snakemake configuration example](scripts/config.example.json) is provided for [scripts/Snakefile](scripts/Snakefile). Copy it to `config.json` at the repository root, edit its paths, install Snakemake separately, and run `snakemake --snakefile scripts/Snakefile --cores 8`. The unified Python runner is the quick-start workflow.
 

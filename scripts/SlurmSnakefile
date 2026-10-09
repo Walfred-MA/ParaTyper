@@ -1,0 +1,48 @@
+"""One Slurm job per assembly; Snakemake owns the output-folder lock."""
+
+from pathlib import Path
+import sys
+
+
+SCRIPT_DIR = Path(config["args"]["scripts_dir"])
+sys.path.insert(0, str(SCRIPT_DIR))
+from annotate_assemblies import run_slurm_task
+
+OUTPUT = Path(config["args"]["output"])
+SPEC = Path(config["spec_path"])
+SAMPLES = sorted(config["queries"])
+DATABASE_DONE = OUTPUT / ".slurm" / "database.done"
+
+
+rule all:
+    input:
+        expand(str(OUTPUT / "{sample}" / "{sample}.transcript_calls.tsv"), sample=SAMPLES),
+        expand(str(OUTPUT / "{sample}" / "{sample}.pseudofragments.tsv"), sample=SAMPLES),
+
+
+rule prepare_database:
+    input:
+        reference=config["args"]["reference"],
+        gff3=config["args"]["gff3"],
+    output:
+        str(DATABASE_DONE),
+    threads: 1
+    resources:
+        slurm_jobs=1,
+    run:
+        run_slurm_task(SPEC, "database")
+        DATABASE_DONE.touch()
+
+
+rule annotate_sample:
+    input:
+        query=lambda wc: config["queries"][wc.sample],
+        database=rules.prepare_database.output,
+    output:
+        calls=str(OUTPUT / "{sample}" / "{sample}.transcript_calls.tsv"),
+        fragments=str(OUTPUT / "{sample}" / "{sample}.pseudofragments.tsv"),
+    threads: 1
+    resources:
+        slurm_jobs=1,
+    run:
+        run_slurm_task(SPEC, "sample", wildcards.sample)
