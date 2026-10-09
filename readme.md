@@ -60,11 +60,21 @@ ParaTyper/
 
 The complete genome-wide GFF3 and genome FASTAs are downloaded separately. See [test/readme.md](test/readme.md) for annotation contents and provenance.
 
-## 3. Get started: SMN on CHM13
+## 3. Get started: GENCODE v50 on a new assembly
 
-Run the following commands from the repository root. Here **GRCh38/hg38 is the annotated source reference** and **CHM13 is the assembly being annotated**. The bundled `test/smn.gff3` uses GRCh38 coordinates; it must not be paired with CHM13 as `--reference`.
+Run these steps from the repository root. **GRCh38/hg38 supplies the annotated source sequence and GENCODE GFF3**; CHM13 is the example new assembly. Substitute your assembly FASTA in step 4 when annotating another genome.
 
-### Download the genomes and GENCODE v50 annotation
+### Step 1. Install
+
+After cloning the repository, create and activate the environment as described in [Install](#2-install):
+
+```bash
+conda env create -f environment.yml
+conda activate ParaTyper
+python scripts/install.py
+```
+
+### Step 2. Get the GENCODE annotation and matching GRCh38 sequence
 
 Download the **full GRCh38.p14 FASTA, including alternate loci, haplotypes, patches, and scaffolds**. Some bundled gene annotations are on these sequences. A primary-assembly-only FASTA omits relevant models. The GENCODE ALL-regions FASTA uses the same sequence names as its GFF3. [GENCODE release 50 downloads](https://www.gencodegenes.org/human/release_50.html).
 
@@ -94,9 +104,51 @@ These are whole genomes. Allow space for the uncompressed FASTAs and temporary B
 
 If the builder warns that a GFF3 contig is absent from the reference FASTA, those models cannot be fully evaluated. Check the FASTA release and contig names, then rebuild with the complete matching reference.
 
-### Run ParaTyper
+### Step 3. Build the exon database
 
-Create a two-column query list with one sample name and assembly path per line:
+Build the database from the **GENCODE v50 GFF3 and its matching full GRCh38 FASTA**. The builder writes the exon-query FASTA, exon metadata, and BLAST database under the chosen prefix:
+
+```bash
+python scripts/build_exon_blastdb_v2.py \
+  --genome data/GRCh38.p14.genome.fa \
+  --gff3 data/gencode.v50.chr_patch_hapl_scaff.annotation.gff3 \
+  --out work/gencode_v50_database/reference_exons
+```
+
+Use a separate database directory for each annotation and reference pair. The runner in step 4 checks this database and reuses it when the inputs and build settings match.
+
+### Step 4. Annotate new assemblies and read the results
+
+Create a two-column query list with one sample name and assembly FASTA path per line. The CHM13 example is:
+
+```bash
+printf 'CHM13 data/CHM13v2.0.fa\n' > query_paths.txt
+
+python scripts/annotate_assemblies.py \
+  --reference data/GRCh38.p14.genome.fa \
+  --gff3 data/gencode.v50.chr_patch_hapl_scaff.annotation.gff3 \
+  --query-list query_paths.txt \
+  --exon-database-dir work/gencode_v50_database \
+  --output results/gencode_v50_CHM13 \
+  --jobs 1 \
+  --blast-threads 8 \
+  --caller-threads 8
+```
+
+To call other assemblies, add their sample names and FASTA paths on separate lines in `query_paths.txt`. Paths are relative to the query-list file; quote paths containing spaces. One multi-contig assembly belongs on one line, so its chromosomes are analyzed together.
+
+The two user-facing tables for this example are:
+
+```text
+results/gencode_v50_CHM13/CHM13/CHM13.transcript_calls.tsv
+results/gencode_v50_CHM13/CHM13/CHM13.pseudofragments.tsv
+```
+
+The first table contains selected gene and transcript calls; the second contains candidate gene-like fragments. See [Output files](#output-files) for their columns and interpretation.
+
+### Small SMN test case on CHM13
+
+The bundled `test/smn.gff3` uses GRCh38 coordinates, so it uses the same GRCh38 reference and CHM13 query list. Give this smaller annotation its own exon database and output directory:
 
 ```bash
 printf 'CHM13 data/CHM13v2.0.fa\n' > query_paths.txt
@@ -112,8 +164,6 @@ python scripts/annotate_assemblies.py \
   --caller-threads 8
 ```
 
-Paths in a query list are relative to **the query-list file**, not the shell's working directory. Quotes are supported for paths containing spaces. One multi-contig assembly belongs on one line, so all CHM13 chromosomes contribute to the same sample.
-
 ParaTyper provides two result tables per sample:
 
 ```text
@@ -123,21 +173,9 @@ results/smn_CHM13/CHM13/CHM13.pseudofragments.tsv
 
 The saved SMN regression includes complete nine-exon MANE assignments for SMN2 near `NC_060929.1:70809743-70837675` on the minus strand and SMN1 near `NC_060929.1:71381874-71409804` on the plus strand (0-based, half-open). These are fixture checks, not a complete expected-results list for the broader `smn.gff3`; changing reference sequence, annotation scope, or filtering can change results.
 
-### Other gene sets and whole-genome annotation
+### Other bundled gene sets and runtime notes
 
 Replace `test/smn.gff3` with another bundled GFF3 and use separate database/output directories. The small files retain the original annotation subsets, which may include similarly named genes and alternative loci.
-
-To annotate all GENCODE genes on CHM13, use the recommended GENCODE v50 annotation downloaded above as `--gff3`, with the same full GRCh38 FASTA and CHM13 query list:
-
-```bash
-python scripts/annotate_assemblies.py \
-  --reference data/GRCh38.p14.genome.fa \
-  --gff3 data/gencode.v50.chr_patch_hapl_scaff.annotation.gff3 \
-  --query-list query_paths.txt \
-  --exon-database-dir work/gencode_v50_database \
-  --output results/gencode_v50_CHM13 \
-  --blast-threads 8 --caller-threads 8
-```
 
 Both uncompressed `.gff3` and compressed `.gff3.gz` annotations are accepted. Whole-genome annotation is substantially larger than the SMN example; the bundled regression suite does not benchmark its runtime or memory requirements.
 
