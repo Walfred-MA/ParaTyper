@@ -636,7 +636,7 @@ def run_slurm_task(spec_path: Path, role: str, sample: str = "") -> None:
     if not re.fullmatch(r"[0-9]+", job_id):
         raise RuntimeError(f"sbatch returned no numeric job ID for {label}: {result.stdout!r}")
     log(f"[SLURM] Submitted {label} as job {job_id}")
-    missing_polls = 0
+    missing_since = None
     while True:
         if status_path.is_file():
             try:
@@ -652,12 +652,13 @@ def run_slurm_task(spec_path: Path, role: str, sample: str = "") -> None:
         except (OSError, subprocess.CalledProcessError) as exc:
             raise RuntimeError(f"cannot check Slurm job {job_id} with squeue: {exc}") from exc
         if job_id not in queue.stdout.split():
-            missing_polls += 1
-            if missing_polls >= 2:
+            if missing_since is None:
+                missing_since = time.monotonic()
+            if time.monotonic() - missing_since >= 60:
                 code = -1
                 break
         else:
-            missing_polls = 0
+            missing_since = None
         time.sleep(10)
     log(f"[SLURM] {label} job {job_id} finished with exit code {code}")
     if code != 0:

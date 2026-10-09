@@ -135,6 +135,22 @@ python scripts/annotate_assemblies.py \
   --caller-threads 8
 ```
 
+If you are running on an HPC cluster with Slurm, use `--slurm` instead of `--jobs`. Install Snakemake 6.15.1 (see the [compatible environment recipe](scripts/envs/snakemake-6.15.1.yaml)), then run the same analysis with cluster allocation options:
+
+```bash
+python scripts/annotate_assemblies.py \
+  --reference data/GRCh38.p14.genome.fa \
+  --gff3 data/gencode.v50.chr_patch_hapl_scaff.annotation.gff3 \
+  --query-list query_paths.txt \
+  --exon-database-dir work/gencode_v50_database \
+  --output results/gencode_v50_CHM13 \
+  --blast-threads 8 --caller-threads 8 \
+  --slurm 20 \
+  --slurm-command='--account=MY_ACCOUNT --partition=compute --mem=64G --time=24:00:00 --cpus-per-task=8'
+```
+
+Each assembly in `query_paths.txt` runs as one Slurm job, with at most 20 active at once. Set the allocation values for your cluster. If Snakemake is in a separate environment, add `--snakemake /path/to/snakemake`. See [Run one Slurm job per assembly](#run-one-slurm-job-per-assembly) for logs, locks, and resuming.
+
 To call other assemblies, add their sample names and FASTA paths on separate lines in `query_paths.txt`. Paths are relative to the query-list file; quote paths containing spaces. One multi-contig assembly belongs on one line, so its chromosomes are analyzed together.
 
 The two user-facing tables for this example are:

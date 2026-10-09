@@ -131,6 +131,27 @@ class SlurmRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Slurm job 12345 failed"):
                 runner.run_slurm_task(spec, "sample", "sampleA")
 
+    def test_missing_exit_file_gets_shared_storage_grace_period(self):
+        spec = self.output / "spec.json"
+        spec.write_text(json.dumps({
+            "args": {"output": str(self.output), "python": sys.executable},
+            "slurm_command": "--mem=64G",
+        }))
+        checks = []
+
+        def fake_run(command, **kwargs):
+            if command[0] == "squeue":
+                checks.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="")
+            return subprocess.CompletedProcess(command, 0, stdout="12345\n")
+
+        with patch.object(runner.subprocess, "run", side_effect=fake_run), \
+                patch.object(runner.time, "monotonic", side_effect=[0.0, 0.0, 61.0]), \
+                patch.object(runner.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, "Slurm job 12345 failed"):
+                runner.run_slurm_task(spec, "sample", "sampleA")
+        self.assertEqual(len(checks), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
