@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install external annotation-pipeline dependencies into the active environment."""
+"""Install ParaTyper command-line dependencies into the active environment."""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ from typing import List
 
 
 CORE_EXECUTABLES = ("blastn", "makeblastdb", "blastdbcmd", "minimap2")
+SNAKEMAKE_VERSION = "6.15.1"
+SNAKEMAKE_PACKAGES = (f"snakemake-minimal={SNAKEMAKE_VERSION}", "tabulate=0.8.10")
 EXECUTABLE_PACKAGES = {
     "blastn": "blast",
     "makeblastdb": "blast",
@@ -37,6 +39,24 @@ def missing_executables(required: tuple[str, ...]) -> List[str]:
     return [name for name in required if shutil.which(name) is None]
 
 
+def installed_snakemake_version() -> str | None:
+    active_prefix = os.environ.get("CONDA_PREFIX", "")
+    if active_prefix:
+        candidate = Path(active_prefix) / "bin" / "snakemake"
+        executable = str(candidate) if candidate.is_file() else None
+    else:
+        executable = shutil.which("snakemake")
+    if executable is None:
+        return None
+    try:
+        return subprocess.run(
+            [executable, "--version"], check=True, text=True,
+            capture_output=True, timeout=15,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+
+
 def check_python_scripts(script_dir: Path) -> None:
     scripts = CORE_PIPELINE_SCRIPTS
     for name in scripts:
@@ -47,13 +67,16 @@ def check_python_scripts(script_dir: Path) -> None:
             py_compile.compile(str(path), doraise=True)
         except py_compile.PyCompileError as exc:
             raise SystemExit(f"ERROR: Python syntax check failed for {path}: {exc}") from exc
+    snakefile = script_dir / "SlurmSnakefile"
+    if not snakefile.is_file():
+        raise SystemExit(f"ERROR: Slurm Snakefile is missing: {snakefile}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Check the exon/transcript pipeline and install missing BLAST+ and minimap2 "
-            "tools into the active environment."
+            "Check the exon/transcript pipeline and install missing BLAST+, "
+            "minimap2, and Snakemake 6.15.1 into the active environment."
         )
     )
     parser.add_argument("--mamba", default="mamba", help="mamba executable [mamba]")
@@ -67,9 +90,10 @@ def main() -> None:
 
     required = CORE_EXECUTABLES
     missing = missing_executables(required)
-    if not missing:
+    snakemake_version = installed_snakemake_version()
+    if not missing and snakemake_version == SNAKEMAKE_VERSION:
         print("[OK] Python pipeline scripts compile", file=sys.stderr)
-        print("[OK] BLAST+ and minimap2 are available", file=sys.stderr)
+        print("[OK] BLAST+, minimap2, and Snakemake 6.15.1 are available", file=sys.stderr)
         return
 
     active_prefix = os.environ.get("CONDA_PREFIX", "")
@@ -81,13 +105,17 @@ def main() -> None:
     mamba = shutil.which(args.mamba)
     if mamba is None:
         raise SystemExit(
-            f"ERROR: missing {', '.join(missing)} and mamba is not available"
+            "ERROR: dependencies need installation and mamba is not available"
         )
 
     packages = sorted({EXECUTABLE_PACKAGES[name] for name in missing})
+    if snakemake_version != SNAKEMAKE_VERSION:
+        packages.extend(SNAKEMAKE_PACKAGES)
     command = [
         mamba,
         "install",
+        "--prefix",
+        active_prefix,
         "--yes",
         "--channel",
         "conda-forge",
@@ -105,6 +133,12 @@ def main() -> None:
         raise SystemExit(
             "ERROR: installation completed but executables remain unavailable: "
             + ", ".join(missing_after)
+        )
+    version_after = installed_snakemake_version()
+    if version_after != SNAKEMAKE_VERSION:
+        raise SystemExit(
+            "ERROR: installation completed but Snakemake 6.15.1 is unavailable "
+            f"(found {version_after or 'none'})"
         )
     print(
         f"[OK] Installed {', '.join(packages)} in active environment: {active_prefix}",

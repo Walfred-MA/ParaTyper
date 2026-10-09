@@ -34,7 +34,9 @@ python scripts/install.py
 python scripts/annotate_assemblies.py --version
 ```
 
-`mamba env create -f environment.yml` is an alternative. If Python, BLAST+, and minimap2 are already installed, no package installation is required: run the scripts directly. `scripts/install.py` checks the scripts and executables; it installs missing BLAST+ or minimap2 tools with mamba into the active conda environment. It does not create an environment.
+`mamba env create -f environment.yml` is an alternative. The bundled environment pins Python 3.9, BLAST+, minimap2, and **Snakemake 6.15.1** (with its compatible `tabulate` version). `scripts/install.py` checks these tools and installs any missing ones with mamba into the active conda environment; it does not create an environment. Local runs can use the scripts directly with Python, BLAST+, and minimap2, but `--slurm` requires Snakemake 6.15.1.
+
+If you already created a ParaTyper environment from an older release, update or recreate it from the current `environment.yml` before running the installer. The older Python 3.11 pin may not resolve with Snakemake 6.15.1.
 
 Check the bundled regression tests without downloading genomes (live search tests skip when their external tools are unavailable):
 
@@ -135,7 +137,7 @@ python scripts/annotate_assemblies.py \
   --caller-threads 8
 ```
 
-If you are running on an HPC cluster with Slurm, use `--slurm` instead of `--jobs`. Install Snakemake 6.15.1 (see the [compatible environment recipe](scripts/envs/snakemake-6.15.1.yaml)), then run the same analysis with cluster allocation options:
+If you are running on an HPC cluster with Slurm, use `--slurm` instead of `--jobs`. The environment installed in step 1 includes Snakemake 6.15.1. Run the same analysis with cluster allocation options:
 
 ```bash
 python scripts/annotate_assemblies.py \
@@ -324,7 +326,7 @@ Run `python scripts/annotate_assemblies.py --help` for the available pipeline op
 
 ### Run one Slurm job per assembly
 
-ParaTyper's Slurm launcher uses **Snakemake 6.15.1**, matching the version used by minsetref. Keep the ParaTyper environment active for its Python and alignment tools. Snakemake may be in a separate environment; a compatible environment recipe is [scripts/envs/snakemake-6.15.1.yaml](scripts/envs/snakemake-6.15.1.yaml). Pass its executable with `--snakemake` if it is not on `PATH`.
+ParaTyper's Slurm launcher uses **Snakemake 6.15.1**, matching the version used by minsetref. The standard ParaTyper environment and `scripts/install.py` provide it. If you keep Snakemake in a separate environment, the [standalone environment recipe](scripts/envs/snakemake-6.15.1.yaml) is available; pass its executable with `--snakemake`.
 
 Use the same reference, annotation, query list, database directory, and output directory as in step 4, replacing `--jobs` with:
 
@@ -344,7 +346,7 @@ python scripts/annotate_assemblies.py \
 
 Snakemake holds its lock in `OUTPUT/.snakemake/` until all submitted jobs finish. ParaTyper keeps submission scripts, exit files, and Slurm logs under `OUTPUT/.slurm/jobs/`. Leave the launcher running while jobs are active. Repeating the command reuses completed outputs. If the launcher was killed, wait until its Slurm jobs have exited before clearing the stale lock with Snakemake's `--unlock` command for that output directory.
 
-An optional [Snakemake configuration example](scripts/config.example.json) is provided for [scripts/Snakefile](scripts/Snakefile). Copy it to `config.json` at the repository root, edit its paths, install Snakemake separately, and run `snakemake --snakefile scripts/Snakefile --cores 8`. The unified Python runner is the quick-start workflow.
+An optional [Snakemake configuration example](scripts/config.example.json) is provided for [scripts/Snakefile](scripts/Snakefile). Copy it to `config.json` at the repository root, edit its paths, and run `snakemake --snakefile scripts/Snakefile --cores 8`. The unified Python runner is the quick-start workflow.
 
 ## 5. Compare with gene-level mapping and pangene
 
